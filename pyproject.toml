@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pygeoflood"
+version = "1.0.1"
+authors = [
+    { name = "Paola Passalacqua", email = "paola@austin.utexas.edu" },
+    { name = "Xing Zheng", email = "zhengxingwhu@gmail.com" },
+    { name = "Alec Carruthers", email = "author@example.com" },
+]
+maintainers = [
+    { name = "Mark Wang", email = "mark.wang@utexas.edu" },
+    { name = "Matthew Preisser", email = "mattpreisser@gmail.com" },
+    { name = "Daniel Hardesty Lewis", email = "danielhardestylewis@utexas.edu" },
+]
+description = "Flood mapping program based on high-resolution terrain analyses"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[project.urls]
+"Homepage" = "https://github.com/passaH2O/GeoFlood"
+"Repository" = "https://github.com/passaH2O/GeoFlood"
+"Bug Tracker" = "https://github.com/passaH2O/GeoFlood/issues"
