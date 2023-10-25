@@ -21,10 +21,10 @@ def segment_catchment_delineation(fdrfn, segshp, segcatfn):
         # this can be avoided if GRASS executable is added to PATH
     elif sys.platform.startswith('darwin'):
         # Mac OS X
-        # TODO: this have to be checked, maybe unix way is good enough
-        grass7bin = '/Applications/GRASS/GRASS-7.8.app/'
+        grass7bin = '/Applications/GRASS-8.3.app/Contents/Resources/bin/grass'
     elif sys.platform.startswith('linux'):
-        grass7bin = 'grass78'
+        # grass7bin = 'grass78'
+        grass7bin = 'grass'
     else:
         raise OSError('Platform not configured.')
 
@@ -54,7 +54,7 @@ def segment_catchment_delineation(fdrfn, segshp, segcatfn):
     os.environ['PATH'] += os.pathsep + os.path.join(gisbase, 'extrabin')
     # add path to GRASS addons
     home = os.path.expanduser("~")
-    os.environ['PATH'] += os.pathsep + os.path.join(home, '.grass7', 'addons', 'scripts')
+    # os.environ['PATH'] += os.pathsep + os.path.join(home, '.grass8', 'addons', 'scripts')
 
     # Definte GRASS-Python environment
     gpydir = os.path.join(gisbase, "etc", "python")
@@ -92,9 +92,9 @@ def segment_catchment_delineation(fdrfn, segshp, segcatfn):
     location = 'geonet'
     os.environ['LOCATION_NAME'] = location
     grassGISlocation = os.path.join(gisdb, location)
-    if os.path.exists(grassGISlocation):
-        print("Cleaning existing Grass location")
-        shutil.rmtree(grassGISlocation)
+    # if os.path.exists(grassGISlocation):
+    #     print("Cleaning existing Grass location")
+    #     shutil.rmtree(grassGISlocation)
 
     # Mapset
     mapset = 'PERMANENT'
@@ -105,14 +105,14 @@ def segment_catchment_delineation(fdrfn, segshp, segcatfn):
     import grass.script.setup as gsetup
 
     # Launch session
-    gsetup.init(gisbase, gisdb, location, mapset)
+    gsetup.init(gisdb, location, mapset)
 
-    print('Making the geonet location')
-    g.run_command('g.proj', georef=fdrfn, location = location)
+    # print('Making the geonet location')
+    # g.run_command('g.proj', georef=fdrfn, location = location)
     print('Existing Mapsets after making locations:')
     g.read_command('g.mapsets', flags = 'l')
     print('Setting GRASSGIS environ')
-    gsetup.init(gisbase, gisdb, location, mapset)
+    gsetup.init(gisdb, location, mapset)
     ##    g.gisenv()
 
     # Mapset
@@ -122,7 +122,7 @@ def segment_catchment_delineation(fdrfn, segshp, segcatfn):
     g.run_command('g.mapset', flags = 'c', mapset = mapset,\
                   location = location, dbase = gisdb)
     # gsetup initialization 
-    gsetup.init(gisbase, gisdb, location, mapset)
+    gsetup.init(gisdb, location, mapset)
     
     # Manage extensions
     extensions = ['r.stream.basins', 'r.stream.watersheds']
@@ -140,9 +140,9 @@ def segment_catchment_delineation(fdrfn, segshp, segcatfn):
     g.run_command('g.region', raster='fdr')
     # Read the channel segment shapefile
     g.run_command('v.in.ogr', input=segshp,
-                  output='Segment')
+                  output='Segment',overwrite=True)
     g.run_command('v.to.rast', input='Segment', use='attr',
-                  output='stream', attribute_column='HYDROID')
+                  output='stream', attribute_column='HYDROID',overwrite=True)
     g.run_command('r.stream.basins',overwrite=True,\
                   direction='fdr',stream_rast='stream',\
                   basins = 'subbasins')
