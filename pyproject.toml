@@ -13,7 +13,7 @@ authors = [
 maintainers = [
     { name = "Mark Wang", email = "mark.wang@utexas.edu" },
     { name = "Matthew Preisser", email = "mattpreisser@gmail.com" },
-    { name = "Daniel Hardesty Lewis", email = "danielhardestylewis@utexas.edu" },
+    { name = "Paola Passalacqua", email = "paola@austin.utexas.edu" },
 ]
 description = "Flood mapping program based on high-resolution terrain analyses"
 readme = "README.md"

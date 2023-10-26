@@ -3,7 +3,7 @@ scipy
 pandas
 matplotlib
 ipykernel
-rasterio>=1.1.3
+rasterio
 numba
 netCDF4
 statsmodels
