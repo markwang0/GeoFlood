@@ -3,8 +3,9 @@ import numpy as np
 import scipy.signal as conv2
 from time import perf_counter
 from scipy.stats.mstats import mquantiles
-from numba import njit
+from numba import jit, njit
 from . import defaults
+
 
 # Gaussian Filter
 def simple_gaussian_smoothing(
@@ -49,7 +50,7 @@ def simple_gaussian_smoothing(
     return smoothedDemArray
 
 
-def anisodiff(img, niter, kappa, gamma, step=(1.0, 1.0), option=2):
+def anisodiff(img, niter, kappa, gamma, step=(1.0, 1.0), option="PeronaMalik2"):
     # initialize output array
     img = img.astype("float32")
     imgout = img.copy()
@@ -61,19 +62,16 @@ def anisodiff(img, niter, kappa, gamma, step=(1.0, 1.0), option=2):
     EW = deltaS.copy()
     gS = np.ones_like(imgout)
     gE = gS.copy()
-    step1 = step[0]
-    step2 = step[1]
-    for ii in range(niter):
-
+    for _ in range(niter):
         # calculate the diffs
         deltaS[:-1, :] = np.diff(imgout, axis=0)
         deltaE[:, :-1] = np.diff(imgout, axis=1)
-        if option == 2:
+        if option == "PeronaMalik2":
             # gS = gs_diff(deltaS,kappa,step1)
             # gE = ge_diff(deltaE,kappa,step2)
             gS = 1.0 / (1.0 + (deltaS / kappa) ** 2.0) / step[0]
             gE = 1.0 / (1.0 + (deltaE / kappa) ** 2.0) / step[1]
-        elif option == 1:
+        elif option == "PeronaMalik1":
             gS = np.exp(-((deltaS / kappa) ** 2.0)) / step[0]
             gE = np.exp(-((deltaE / kappa) ** 2.0)) / step[1]
         # update matrices
@@ -116,50 +114,12 @@ def lambda_nonlinear_filter(nanDemArray, demPixelScale):
     slopeMagnitudeDemArray = slopeMagnitudeDemArray[
         ~np.isnan(slopeMagnitudeDemArray)
     ]
-    print(("dem smoothing Quantile", defaults.demSmoothingQuantile))
+    print("DEM smoothing Quantile:", defaults.demSmoothingQuantile)
     edgeThresholdValue = (
         mquantiles(
             np.absolute(slopeMagnitudeDemArray), defaults.demSmoothingQuantile
         )
     ).item()
-    print(("edgeThresholdValue:", edgeThresholdValue))
+    print("Edge Threshold Value:", edgeThresholdValue)
     return edgeThresholdValue
 
-
-# def main():
-#     nanDemArray = read_dem_from_geotiff(Parameters.demFileName,
-#                                         Parameters.demDataFilePath)
-#     print(np.max(nanDemArray))
-#     print(np.min(nanDemArray))
-#     nanDemArray[nanDemArray < defaults.demNanFlag] = np.nan
-#     if defaults.diffusionMethod == 'PeronaMalik2':
-#         edgeThresholdValue = lambda_nonlinear_filter(nanDemArray)
-#         filteredDemArray = anisodiff(nanDemArray, defaults.nFilterIterations,
-#                                      edgeThresholdValue,
-#                                      defaults.diffusionTimeIncrement,
-#                                      (Parameters.demPixelScale,
-#                                       Parameters.demPixelScale), 2)
-#     elif defaults.diffusionMethod == 'PeronaMalik1':
-#         edgeThresholdValue = lambda_nonlinear_filter(nanDemArray)
-#         filteredDemArray = anisodiff(nanDemArray, defaults.nFilterIterations,
-#                                      edgeThresholdValue,
-#                                      defaults.diffusionTimeIncrement,
-#                                      (Parameters.demPixelScale,
-#                                       Parameters.demPixelScale), 1)
-
-#     else:
-#         print((defaults.diffusionMethod+" filter is not available in the"))
-#         "current version GeoNet"
-#     # plot the filtered DEM
-#     #if defaults.doPlot == 1:
-#     #    raster_plot(filteredDemArray, 'Filtered DEM')
-
-#     # Writing the filtered DEM as a tif
-#     write_geotif_filteredDEM(filteredDemArray, Parameters.demDataFilePath,
-#                              Parameters.demFileName)
-
-# if __name__ == '__main__':
-#     t0 = perf_counter()
-#     main()
-#     t1 = perf_counter()
-#     print(("time taken to complete nonlinear filtering:", t1-t0, " seconds"))

@@ -1,7 +1,7 @@
-#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
 # Set default parameters for GeoNet
 
-# Setting up Geonet grass location
 from __future__ import division
 import shutil
 import os
