@@ -1,8 +1,16 @@
 import numpy as np
 import scipy.signal as conv2
+import toml
+from pathlib import Path
 from scipy.stats.mstats import mquantiles
-from . import defaults
 
+with open(Path(Path(__file__).parent, "config.toml")) as f:
+    config = toml.load(f)
+
+def set_nan(raster, nodata):
+    raster[raster < config["general"]["nan_floor"]] = np.nan
+    raster[raster == nodata] = np.nan
+    return raster
 
 # Gaussian Filter
 def simple_gaussian_smoothing(
@@ -111,12 +119,12 @@ def lambda_nonlinear_filter(nanDemArray, demPixelScale):
     slopeMagnitudeDemArray = slopeMagnitudeDemArray[
         ~np.isnan(slopeMagnitudeDemArray)
     ]
-    print("DEM smoothing Quantile:", defaults.demSmoothingQuantile)
+    print("DEM smoothing Quantile:", config["filter"]["smoothing_quantile"])
     edgeThresholdValue = (
         mquantiles(
-            np.absolute(slopeMagnitudeDemArray), defaults.demSmoothingQuantile
+            np.absolute(slopeMagnitudeDemArray),
+            config["filter"]["smoothing_quantile"],
         )
     ).item()
     print("Edge Threshold Value:", edgeThresholdValue)
     return edgeThresholdValue
-

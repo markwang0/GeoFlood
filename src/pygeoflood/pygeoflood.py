@@ -1,10 +1,11 @@
 import numpy as np
 import os
 import rasterio as rio
+import shutil
 import time
 import toml
 from typing import Union
-from .tools import anisodiff, lambda_nonlinear_filter
+from . import tools as t
 from pathlib import Path
 
 # put this into project_dir and keep path
@@ -19,6 +20,7 @@ class PyGeoFlood(object):
         dem_path,
         project_dir=None,
         dem_smoothing_quantile=0.9,
+        config_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -42,12 +44,22 @@ class PyGeoFlood(object):
             self._project_dir = dem_path.parent
         self._dem_smoothing_quantile = dem_smoothing_quantile
         self._filtered_dem_path = None
+        if config_path:
+            self._config_path = Path(config_path)
+            with open(self._config_path) as f:
+                self._config = toml.load(f)
+        else:
+            default_config_path = Path(Path(__file__).parent, "config.toml")
+            self._config_path = Path(self._project_dir, "config.toml")
+            shutil.copy(default_config_path, self._config_path)
+            with open(self._config_path) as f:
+                self._config = toml.load(f)
 
     def __repr__(self):
         attrs = "\n    ".join(
             f"{k[1:]}='{str(v)}'" if isinstance(v, Path) else f"{k[1:]}={v!r}"
             for k, v in self.__dict__.items()
-            if v is not None
+            if v is not None and k != "_config"
         )
         return f"{self.__class__.__name__}(\n    {attrs}\n)"
 
@@ -101,6 +113,31 @@ class PyGeoFlood(object):
                 "filtered_dem_path must be a string or os.PathLike object"
             )
 
+    @property
+    def config_path(self) -> Union[str, os.PathLike]:
+        return self._config_path
+
+    @config_path.setter
+    def config_path(self, value: Union[str, os.PathLike]):
+        if (
+            isinstance(value, (str, os.PathLike))
+            and Path(value).suffix == ".toml"
+        ):
+            if Path(value).is_file():
+                self._config_path = value
+                with open(self._config_path) as f:
+                    self._config = toml.load(f)
+            else:
+                default_config_path = Path(Path(__file__).parent, "config.toml")
+                self._config_path = Path(self._project_dir, "config.toml")
+                shutil.copy(default_config_path, self._config_path)
+                with open(self._config_path) as f:
+                    self._config = toml.load(f)
+        else:
+            raise TypeError(
+                "config must be a string or os.PathLike object with .toml extension"
+            )
+
     def nonlinear_filter(
         self,
         filtered_dem_path: Union[str, os.PathLike] = None,
@@ -111,18 +148,18 @@ class PyGeoFlood(object):
         with rio.open(self._dem_path) as ds:
             dem = ds.read(1)
             dem_profile = ds.profile
+
         # set NaN values on DEM
         demPixelScale = dem_profile["transform"][0]
-        dem[dem < config["general"]["nan_floor"]] = np.nan
-        dem[dem == dem_profile["nodata"]] = np.nan
-        edgeThresholdValue = lambda_nonlinear_filter(dem, demPixelScale)
-        filteredDemArray = anisodiff(
+        dem = t.set_nan(dem, dem_profile["nodata"])
+        edgeThresholdValue = t.lambda_nonlinear_filter(dem, demPixelScale)
+        filteredDemArray = t.anisodiff(
             img=dem,
-            niter=config["filter"]["n_iter"],
+            niter=self._config["filter"]["n_iter"],
             kappa=edgeThresholdValue,
-            gamma=config["filter"]["time_increment"],
+            gamma=self._config["filter"]["time_increment"],
             step=(demPixelScale, demPixelScale),
-            option=config["filter"]["method"],
+            option=self._config["filter"]["method"],
         )
         # write filtered DEM with lzw compression
         dem_profile.update(compress="lzw")
