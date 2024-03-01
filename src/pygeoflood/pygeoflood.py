@@ -4,14 +4,10 @@ import rasterio as rio
 import shutil
 import time
 import toml
-from typing import Union
+
 from . import tools as t
 from pathlib import Path
-
-# put this into project_dir and keep path
-# as an attribute of the class
-# with open("config.toml") as f:
-#     config = toml.load(f)
+from typing import Union
 
 
 class PyGeoFlood(object):
@@ -19,7 +15,6 @@ class PyGeoFlood(object):
         self,
         dem_path,
         project_dir=None,
-        dem_smoothing_quantile=0.9,
         config_path=None,
     ):
         """
@@ -31,9 +26,9 @@ class PyGeoFlood(object):
             Path to DEM in GeoTIFF format.
         project_dir : `str`, `os.pathlike`, optional
             Path to project directory. Default is current working directory.
-        dem_smoothing_quantile : `float`, optional
-            Quantile of landscape to smooth. Typically ranges from 0.5-0.9, default is 0.9.
-        nan_flag : int
+        config_path : `str`, `os.pathlike`, optional
+            Path to configuration file. If not provided, default configuration
+            file will be copied to project directory.
         """
 
         self._dem_path = Path(dem_path)
@@ -42,8 +37,8 @@ class PyGeoFlood(object):
             self._project_dir = Path(project_dir)
         else:
             self._project_dir = dem_path.parent
-        self._dem_smoothing_quantile = dem_smoothing_quantile
         self._filtered_dem_path = None
+        # if no config_path is provided, use default config file
         if config_path:
             self._config_path = Path(config_path)
             with open(self._config_path) as f:
@@ -85,19 +80,6 @@ class PyGeoFlood(object):
         else:
             raise TypeError(
                 "project_dir must be a string or os.PathLike object"
-            )
-
-    @property
-    def dem_smoothing_quantile(self) -> float:
-        return self._dem_smoothing_quantile
-
-    @dem_smoothing_quantile.setter
-    def dem_smoothing_quantile(self, value: float):
-        if isinstance(value, float) and (0 <= value <= 1):
-            self._dem_smoothing_quantile = value
-        else:
-            raise ValueError(
-                "dem_smoothing_quantile must be a float between 0 and 1."
             )
 
     @property
@@ -149,7 +131,6 @@ class PyGeoFlood(object):
             dem = ds.read(1)
             dem_profile = ds.profile
 
-        # set NaN values on DEM
         demPixelScale = dem_profile["transform"][0]
         dem = t.set_nan(dem, dem_profile["nodata"])
         edgeThresholdValue = t.lambda_nonlinear_filter(dem, demPixelScale)
