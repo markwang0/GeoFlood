@@ -2,8 +2,11 @@
 nan_floor = -9998.0
 
 [filter]
-method = "PeronaMalik2" # PeronaMalik1 or PeronaMalik2
-time_increment = 0.1    # makes explicit scheme stable
+method = 'PeronaMalik2'  # 'PeronaMalik1' or 'PeronaMalik2'
+time_increment = 0.1     # makes explicit scheme stable
 sigma_squared = 0.05
 n_iter = 50
 smoothing_quantile = 0.9
+
+[curvature]
+method = 'geometric' # 'geometric' or 'laplacian'

@@ -10,6 +10,19 @@ from pathlib import Path
 from typing import Union
 
 
+def time_it(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        print(
+            f"{func.__name__} completed in {end_time - start_time:.4f} seconds"
+        )
+        return result
+
+    return wrapper
+
+
 class PyGeoFlood(object):
     def __init__(
         self,
@@ -33,13 +46,12 @@ class PyGeoFlood(object):
 
         self._dem_path = Path(dem_path)
         # if no project_dir is provided, use dir containing DEM
-        if project_dir:
+        if project_dir is not None:
             self._project_dir = Path(project_dir)
         else:
             self._project_dir = dem_path.parent
-        self._filtered_dem_path = None
         # if no config_path is provided, use default config file
-        if config_path:
+        if config_path is not None:
             self._config_path = Path(config_path)
             with open(self._config_path) as f:
                 self._config = toml.load(f)
@@ -96,6 +108,30 @@ class PyGeoFlood(object):
             )
 
     @property
+    def slope_path(self) -> Union[str, os.PathLike]:
+        return self._slope_path
+
+    @slope_path.setter
+    def slope_path(self, value: Union[str, os.PathLike]):
+        if isinstance(value, (str, os.PathLike)):
+            self._slope_path = value
+        else:
+            raise TypeError("slope_path must be a string or os.PathLike object")
+
+    @property
+    def curvature_path(self) -> Union[str, os.PathLike]:
+        return self._curvature_path
+
+    @slope_path.setter
+    def curvature_path(self, value: Union[str, os.PathLike]):
+        if isinstance(value, (str, os.PathLike)):
+            self._curvature_path = value
+        else:
+            raise TypeError(
+                "curvature_path must be a string or os.PathLike object"
+            )
+
+    @property
     def config_path(self) -> Union[str, os.PathLike]:
         return self._config_path
 
@@ -120,47 +156,92 @@ class PyGeoFlood(object):
                 "config must be a string or os.PathLike object with .toml extension"
             )
 
+    @time_it
     def nonlinear_filter(
         self,
         filtered_dem_path: Union[str, os.PathLike] = None,
     ):
         """Run nonlinear filter on DEM."""
-        start_time = time.time()
         # read in DEM
         with rio.open(self._dem_path) as ds:
             dem = ds.read(1)
             dem_profile = ds.profile
 
-        demPixelScale = dem_profile["transform"][0]
+        pixel_scale = dem_profile["transform"][0]
         dem = t.set_nan(dem, dem_profile["nodata"])
-        edgeThresholdValue = t.lambda_nonlinear_filter(dem, demPixelScale)
+        edgeThresholdValue = t.lambda_nonlinear_filter(dem, pixel_scale)
         filteredDemArray = t.anisodiff(
             img=dem,
             niter=self._config["filter"]["n_iter"],
             kappa=edgeThresholdValue,
             gamma=self._config["filter"]["time_increment"],
-            step=(demPixelScale, demPixelScale),
+            step=(pixel_scale, pixel_scale),
             option=self._config["filter"]["method"],
         )
+
         # write filtered DEM with lzw compression
         dem_profile.update(compress="lzw")
-        # append to DEM filename, save in same directory
-        filtered_dem = Path(
-            self._project_dir,
-            f"{self._dem_path.stem}_PM_filtered.tif",
-        )
-        if filtered_dem_path:
+
+        if filtered_dem_path is not None:
             filtered_dem = Path(filtered_dem_path)
         else:
-            self._filtered_dem_path = filtered_dem
-        with rio.open(filtered_dem, "w", **dem_profile) as ds:
+            # append to DEM filename, save in same directory
+            filtered_dem = Path(
+                self._project_dir,
+                f"{self._dem_path.stem}_PM_filtered.tif",
+            )
+        self._filtered_dem_path = filtered_dem
+
+        with rio.open(self._filtered_dem_path, "w", **dem_profile) as ds:
             ds.write(filteredDemArray, 1)
 
-        run_time = time.time() - start_time  # seconds
-        print(
-            f"Time taken to complete nonlinear filtering: {round(run_time,0)} seconds"
+    @time_it
+    def slope_curvature(
+        self,
+        slope_path: Union[str, os.PathLike] = None,
+        curvature_path: Union[str, os.PathLike] = None,
+    ):
+        """Calculate slope and curvature of DEM."""
+        if self._filtered_dem_path is None:
+            raise ValueError(
+                "Filtered DEM must be created before calculating slope and curvature"
+            )
+        with rio.open(self._filtered_dem_path) as ds:
+            filtered_dem = ds.read(1)
+            filtered_dem_profile = ds.profile
+
+        print("computing slope")
+        pixel_scale = filtered_dem_profile["transform"][0]
+        slope_array = t.compute_dem_slope(filtered_dem, pixel_scale)
+        slope_array[np.isnan(filtered_dem)] = np.nan
+
+        # write slope array
+        if slope_path is not None:
+            slope = Path(slope_path)
+        else:
+            slope = Path(
+                self._project_dir,
+                f"{self._dem_path.stem}_slope.tif",
+            )
+        self._slope_path = slope
+        with rio.open(self._slope_path, "w", **filtered_dem_profile) as ds:
+            ds.write(slope_array, 1)
+
+        print("computing curvature")
+        curvature_array = t.compute_dem_curvature(
+            filtered_dem,
+            pixel_scale,
+            self._config["curvature"]["method"],
         )
 
-    def slope_curvature(self):
-        """Calculate slope and curvature of DEM."""
-        start_time = time.time()
+        # write curvature array
+        if curvature_path is not None:
+            curvature = Path(curvature_path)
+        else:
+            curvature = Path(
+                self._project_dir,
+                f"{self._dem_path.stem}_curvature.tif",
+            )
+        self._curvature_path = curvature
+        with rio.open(self._curvature_path, "w", **filtered_dem_profile) as ds:
+            ds.write(curvature_array, 1)

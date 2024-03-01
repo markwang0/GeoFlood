@@ -7,10 +7,12 @@ from scipy.stats.mstats import mquantiles
 with open(Path(Path(__file__).parent, "config.toml")) as f:
     config = toml.load(f)
 
+
 def set_nan(raster, nodata):
     raster[raster < config["general"]["nan_floor"]] = np.nan
     raster[raster == nodata] = np.nan
     return raster
+
 
 # Gaussian Filter
 def simple_gaussian_smoothing(
@@ -128,3 +130,70 @@ def lambda_nonlinear_filter(nanDemArray, demPixelScale):
     ).item()
     print("Edge Threshold Value:", edgeThresholdValue)
     return edgeThresholdValue
+
+
+def compute_dem_slope(filteredDemArray, pixelDemScale):
+    slopeYArray, slopeXArray = np.gradient(filteredDemArray, pixelDemScale)
+    slopeDemArray = np.sqrt(slopeXArray**2 + slopeYArray**2)
+    slopeMagnitudeDemArrayQ = slopeDemArray
+    slopeMagnitudeDemArrayQ = np.reshape(
+        slopeMagnitudeDemArrayQ,
+        np.size(slopeMagnitudeDemArrayQ),
+    )
+    slopeMagnitudeDemArrayQ = slopeMagnitudeDemArrayQ[
+        ~np.isnan(slopeMagnitudeDemArrayQ)
+    ]
+    # Computation of statistics of slope
+    print(" slope statistics")
+    print(
+        " angle min:",
+        np.arctan(np.percentile(slopeMagnitudeDemArrayQ, 0.1)) * 180 / np.pi,
+    )
+    print(
+        " angle max:",
+        np.arctan(np.percentile(slopeMagnitudeDemArrayQ, 99.9)) * 180 / np.pi,
+    )
+    print(" mean slope:", np.nanmean(slopeDemArray[:]))
+    print(" stdev slope:", np.nanstd(slopeDemArray[:]))
+    return slopeDemArray
+
+
+def compute_dem_curvature(demArray, pixelDemScale, curvatureCalcMethod):
+    # OLD:
+    # gradXArray, gradYArray = np.gradient(demArray, pixelDemScale)
+    # NEW:
+    gradYArray, gradXArray = np.gradient(demArray, pixelDemScale)
+
+    slopeArrayT = np.sqrt(gradXArray**2 + gradYArray**2)
+    if curvatureCalcMethod == "geometric":
+        # Geometric curvature
+        print(" using geometric curvature")
+        gradXArrayT = np.divide(gradXArray, slopeArrayT)
+        gradYArrayT = np.divide(gradYArray, slopeArrayT)
+    elif curvatureCalcMethod == "laplacian":
+        # do nothing..
+        print(" using laplacian curvature")
+        gradXArrayT = gradXArray
+        gradYArrayT = gradYArray
+
+    # NEW:
+    tmpy, gradGradXArray = np.gradient(gradXArrayT, pixelDemScale)
+    gradGradYArray, tmpx = np.gradient(gradYArrayT, pixelDemScale)
+
+    curvatureDemArray = gradGradXArray + gradGradYArray
+    curvatureDemArray[np.isnan(curvatureDemArray)] = 0
+    del tmpy, tmpx
+    # Computation of statistics of curvature
+    print(" curvature statistics")
+    tt = curvatureDemArray[~np.isnan(curvatureDemArray[:])]
+    print(" non-nan curvature cell number:", tt.shape[0])
+    finiteCurvatureDemList = curvatureDemArray[
+        np.isfinite(curvatureDemArray[:])
+    ]
+    print(" non-nan finite curvature cell number:", end=" ")
+    finiteCurvatureDemList.shape[0]
+    curvatureDemMean = np.nanmean(finiteCurvatureDemList)
+    curvatureDemStdDevn = np.nanstd(finiteCurvatureDemList)
+    print(" mean: ", curvatureDemMean)
+    print(" standard deviation: ", curvatureDemStdDevn)
+    return curvatureDemArray
