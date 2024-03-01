@@ -2,14 +2,15 @@ import numpy as np
 import os
 import rasterio as rio
 import time
+import toml
 from typing import Union
-from . import defaults
 from .tools import anisodiff, lambda_nonlinear_filter
 from pathlib import Path
 
-# initiate with path to DEM
-# automatically infer project path from DEM
-# option to set project path if DEM is not in project dir
+# put this into project_dir and keep path
+# as an attribute of the class
+# with open("config.toml") as f:
+#     config = toml.load(f)
 
 
 class PyGeoFlood(object):
@@ -34,20 +35,13 @@ class PyGeoFlood(object):
         """
 
         self._dem_path = Path(dem_path)
+        # if no project_dir is provided, use dir containing DEM
         if project_dir:
             self._project_dir = Path(project_dir)
         else:
             self._project_dir = dem_path.parent
         self._dem_smoothing_quantile = dem_smoothing_quantile
         self._filtered_dem_path = None
-
-    # def __repr__(self):
-    #     return "{klass}(\n    {attrs}\n)".format(
-    #         klass=self.__class__.__name__,
-    #         attrs="\n    ".join(
-    #             "{}={!r},".format(k[1:], v) for k, v in self.__dict__.items()
-    #         ),
-    #     )
 
     def __repr__(self):
         attrs = "\n    ".join(
@@ -77,7 +71,9 @@ class PyGeoFlood(object):
         if isinstance(value, (str, os.PathLike)):
             self._project_dir = value
         else:
-            raise TypeError("project_dir must be a string or os.PathLike object")
+            raise TypeError(
+                "project_dir must be a string or os.PathLike object"
+            )
 
     @property
     def dem_smoothing_quantile(self) -> float:
@@ -88,7 +84,9 @@ class PyGeoFlood(object):
         if isinstance(value, float) and (0 <= value <= 1):
             self._dem_smoothing_quantile = value
         else:
-            raise ValueError("dem_smoothing_quantile must be a float between 0 and 1.")
+            raise ValueError(
+                "dem_smoothing_quantile must be a float between 0 and 1."
+            )
 
     @property
     def filtered_dem_path(self) -> Union[str, os.PathLike]:
@@ -99,9 +97,14 @@ class PyGeoFlood(object):
         if isinstance(value, (str, os.PathLike)):
             self._filtered_dem_path = value
         else:
-            raise TypeError("filtered_dem_path must be a string or os.PathLike object")
+            raise TypeError(
+                "filtered_dem_path must be a string or os.PathLike object"
+            )
 
-    def nonlinear_filter(self):
+    def nonlinear_filter(
+        self,
+        filtered_dem_path: Union[str, os.PathLike] = None,
+    ):
         """Run nonlinear filter on DEM."""
         start_time = time.time()
         # read in DEM
@@ -110,16 +113,16 @@ class PyGeoFlood(object):
             dem_profile = ds.profile
         # set NaN values on DEM
         demPixelScale = dem_profile["transform"][0]
-        dem[dem < defaults.demNanFlag] = np.nan
+        dem[dem < config["general"]["nan_floor"]] = np.nan
         dem[dem == dem_profile["nodata"]] = np.nan
         edgeThresholdValue = lambda_nonlinear_filter(dem, demPixelScale)
         filteredDemArray = anisodiff(
             img=dem,
-            niter=defaults.nFilterIterations,
+            niter=config["filter"]["n_iter"],
             kappa=edgeThresholdValue,
-            gamma=defaults.diffusionTimeIncrement,
+            gamma=config["filter"]["time_increment"],
             step=(demPixelScale, demPixelScale),
-            option=defaults.diffusionMethod,
+            option=config["filter"]["method"],
         )
         # write filtered DEM with lzw compression
         dem_profile.update(compress="lzw")
@@ -128,7 +131,10 @@ class PyGeoFlood(object):
             self._project_dir,
             f"{self._dem_path.stem}_PM_filtered.tif",
         )
-        self._filtered_dem_path = filtered_dem
+        if filtered_dem_path:
+            filtered_dem = Path(filtered_dem_path)
+        else:
+            self._filtered_dem_path = filtered_dem
         with rio.open(filtered_dem, "w", **dem_profile) as ds:
             ds.write(filteredDemArray, 1)
 

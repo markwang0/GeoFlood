@@ -1,9 +1,6 @@
-from __future__ import division
 import numpy as np
 import scipy.signal as conv2
-from time import perf_counter
 from scipy.stats.mstats import mquantiles
-from numba import jit, njit
 from . import defaults
 
 
