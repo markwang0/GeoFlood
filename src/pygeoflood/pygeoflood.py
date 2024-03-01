@@ -57,7 +57,7 @@ class PyGeoFlood(object):
 
     def __repr__(self):
         attrs = "\n    ".join(
-            f"{k[1:]}='{str(v)}'" if isinstance(v, Path) else f"{k[1:]}={v!r}"
+            f'{k[1:]}="{v}"' if isinstance(v, (str, Path)) else f"{k[1:]}={v!r}"
             for k, v in self.__dict__.items()
             if v is not None and k != "_config"
         )
