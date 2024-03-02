@@ -15,9 +15,16 @@ def time_it(func):
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
-        print(
-            f"{func.__name__} completed in {end_time - start_time:.4f} seconds"
-        )
+        duration = end_time - start_time
+
+        # Check if duration is over 60 minutes (3600 seconds)
+        if duration > 3600:
+            print(f"{func.__name__} completed in {duration / 3600:.4f} hours")
+        # Check if duration is over 60 seconds
+        elif duration > 60:
+            print(f"{func.__name__} completed in {duration / 60:.4f} minutes")
+        else:
+            print(f"{func.__name__} completed in {duration:.4f} seconds")
         return result
 
     return wrapper
