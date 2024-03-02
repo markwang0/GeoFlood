@@ -1,23 +1,15 @@
 import numpy as np
 import scipy.signal as conv2
-import toml
 from pathlib import Path
+
+
 from scipy.stats.mstats import mquantiles
-
-with open(Path(Path(__file__).parent, "config.toml")) as f:
-    config = toml.load(f)
-
-
-def set_nan(raster, nodata):
-    raster[raster < config["general"]["nan_floor"]] = np.nan
-    raster[raster == nodata] = np.nan
-    return raster
 
 
 # Gaussian Filter
 def simple_gaussian_smoothing(
     inputDemArray, kernelWidth, diffusionSigmaSquared
-):
+) -> np.ndarray:
     """
     smoothing input array with gaussian filter
     Code is vectorized for efficiency Harish Sangireddy
@@ -57,7 +49,14 @@ def simple_gaussian_smoothing(
     return smoothedDemArray
 
 
-def anisodiff(img, niter, kappa, gamma, step=(1.0, 1.0), option="PeronaMalik2"):
+def anisodiff(
+    img,
+    niter,
+    kappa,
+    gamma,
+    step=(1.0, 1.0),
+    option="PeronaMalik2",
+) -> np.ndarray:
     # initialize output array
     img = img.astype("float32")
     imgout = img.copy()
@@ -102,7 +101,11 @@ def anisodiff(img, niter, kappa, gamma, step=(1.0, 1.0), option="PeronaMalik2"):
     return imgout
 
 
-def lambda_nonlinear_filter(nanDemArray, demPixelScale):
+def lambda_nonlinear_filter(
+    nanDemArray,
+    demPixelScale,
+    smoothing_quantile,
+) -> float:
     print("Computing slope of raw DTM")
     slopeXArray, slopeYArray = np.gradient(nanDemArray, demPixelScale)
     slopeMagnitudeDemArray = np.sqrt(slopeXArray**2 + slopeYArray**2)
@@ -121,18 +124,18 @@ def lambda_nonlinear_filter(nanDemArray, demPixelScale):
     slopeMagnitudeDemArray = slopeMagnitudeDemArray[
         ~np.isnan(slopeMagnitudeDemArray)
     ]
-    print("DEM smoothing Quantile:", config["filter"]["smoothing_quantile"])
+    print("DEM smoothing Quantile:", smoothing_quantile)
     edgeThresholdValue = (
         mquantiles(
             np.absolute(slopeMagnitudeDemArray),
-            config["filter"]["smoothing_quantile"],
+            smoothing_quantile,
         )
     ).item()
     print("Edge Threshold Value:", edgeThresholdValue)
     return edgeThresholdValue
 
 
-def compute_dem_slope(filteredDemArray, pixelDemScale):
+def compute_dem_slope(filteredDemArray, pixelDemScale) -> np.ndarray:
     slopeYArray, slopeXArray = np.gradient(filteredDemArray, pixelDemScale)
     slopeDemArray = np.sqrt(slopeXArray**2 + slopeYArray**2)
     slopeMagnitudeDemArrayQ = slopeDemArray
@@ -158,7 +161,11 @@ def compute_dem_slope(filteredDemArray, pixelDemScale):
     return slopeDemArray
 
 
-def compute_dem_curvature(demArray, pixelDemScale, curvatureCalcMethod):
+def compute_dem_curvature(
+    demArray,
+    pixelDemScale,
+    curvatureCalcMethod,
+) -> np.ndarray:
     # OLD:
     # gradXArray, gradYArray = np.gradient(demArray, pixelDemScale)
     # NEW:

@@ -3,7 +3,7 @@ import os
 import rasterio as rio
 import shutil
 import time
-import toml
+
 
 from . import tools as t
 from pathlib import Path
@@ -28,7 +28,6 @@ class PyGeoFlood(object):
         self,
         dem_path,
         project_dir=None,
-        config_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -39,9 +38,6 @@ class PyGeoFlood(object):
             Path to DEM in GeoTIFF format.
         project_dir : `str`, `os.pathlike`, optional
             Path to project directory. Default is current working directory.
-        config_path : `str`, `os.pathlike`, optional
-            Path to configuration file. If not provided, default configuration
-            file will be copied to project directory.
         """
 
         self._dem_path = Path(dem_path)
@@ -50,23 +46,12 @@ class PyGeoFlood(object):
             self._project_dir = Path(project_dir)
         else:
             self._project_dir = dem_path.parent
-        # if no config_path is provided, use default config file
-        if config_path is not None:
-            self._config_path = Path(config_path)
-            with open(self._config_path) as f:
-                self._config = toml.load(f)
-        else:
-            default_config_path = Path(Path(__file__).parent, "config.toml")
-            self._config_path = Path(self._project_dir, "config.toml")
-            shutil.copy(default_config_path, self._config_path)
-            with open(self._config_path) as f:
-                self._config = toml.load(f)
 
     def __repr__(self):
         attrs = "\n    ".join(
             f'{k[1:]}="{v}"' if isinstance(v, (str, Path)) else f"{k[1:]}={v!r}"
             for k, v in self.__dict__.items()
-            if v is not None and k != "_config"
+            if v is not None
         )
         return f"{self.__class__.__name__}(\n    {attrs}\n)"
 
@@ -122,7 +107,7 @@ class PyGeoFlood(object):
     def curvature_path(self) -> Union[str, os.PathLike]:
         return self._curvature_path
 
-    @slope_path.setter
+    @curvature_path.setter
     def curvature_path(self, value: Union[str, os.PathLike]):
         if isinstance(value, (str, os.PathLike)):
             self._curvature_path = value
@@ -131,52 +116,61 @@ class PyGeoFlood(object):
                 "curvature_path must be a string or os.PathLike object"
             )
 
-    @property
-    def config_path(self) -> Union[str, os.PathLike]:
-        return self._config_path
-
-    @config_path.setter
-    def config_path(self, value: Union[str, os.PathLike]):
-        if (
-            isinstance(value, (str, os.PathLike))
-            and Path(value).suffix == ".toml"
-        ):
-            if Path(value).is_file():
-                self._config_path = value
-                with open(self._config_path) as f:
-                    self._config = toml.load(f)
-            else:
-                default_config_path = Path(Path(__file__).parent, "config.toml")
-                self._config_path = Path(self._project_dir, "config.toml")
-                shutil.copy(default_config_path, self._config_path)
-                with open(self._config_path) as f:
-                    self._config = toml.load(f)
-        else:
-            raise TypeError(
-                "config must be a string or os.PathLike object with .toml extension"
-            )
-
     @time_it
     def nonlinear_filter(
         self,
         filtered_dem_path: Union[str, os.PathLike] = None,
+        method: str = "PeronaMalik2",
+        smoothing_quantile: float = 0.9,
+        time_increment: float = 0.1,
+        n_iter: int = 50,
+        sigma_squared: float = 0.05,
     ):
-        """Run nonlinear filter on DEM."""
+        """
+        Run nonlinear filter on DEM.
+
+        Parameters
+        ---------
+        dem_path : `str`, `os.pathlike`
+            Path to DEM in GeoTIFF format.
+        filtered_dem_path : `str`, `os.pathlike`, optional
+            Path to save filtered DEM. If not provided, filtered DEM will be
+            saved in project directory.
+        method : `str`, optional
+            Filter method to apply to DEM. Options include:
+            - "PeronaMalik1": TODO: detailed description
+            - "PeronaMalik2": TODO: detailed description
+            - "Gaussian": Smoothes DEM with a Gaussian filter.
+            Default is "PeronaMalik2".
+        smoothing_quantile : `float`, optional
+            Quantile for calculating Perona-Malik nonlinear filter
+            edge threshold value (kappa). Default is 0.9.
+        time_increment : `float`, optional
+            Time increment for Perona-Malik nonlinear filter. Default is 0.1.
+            AKA gamma, a higher makes diffusion process faster but can lead to
+            instability.
+        n_iter : `int`, optional
+            Number of iterations for Perona-Malik nonlinear filter. Default is 50.
+        sigma_squared : `float`, optional
+            Variance of Gaussian filter. Default is 0.05.
+        """
         # read in DEM
         with rio.open(self._dem_path) as ds:
             dem = ds.read(1)
             dem_profile = ds.profile
 
         pixel_scale = dem_profile["transform"][0]
-        dem = t.set_nan(dem, dem_profile["nodata"])
-        edgeThresholdValue = t.lambda_nonlinear_filter(dem, pixel_scale)
+        dem[dem == dem_profile["nodata"]] = np.nan
+        edgeThresholdValue = t.lambda_nonlinear_filter(
+            dem, pixel_scale, smoothing_quantile
+        )
         filteredDemArray = t.anisodiff(
             img=dem,
-            niter=self._config["filter"]["n_iter"],
+            niter=n_iter,
             kappa=edgeThresholdValue,
-            gamma=self._config["filter"]["time_increment"],
+            gamma=time_increment,
             step=(pixel_scale, pixel_scale),
-            option=self._config["filter"]["method"],
+            option=method,
         )
 
         # write filtered DEM with lzw compression
@@ -200,8 +194,25 @@ class PyGeoFlood(object):
         self,
         slope_path: Union[str, os.PathLike] = None,
         curvature_path: Union[str, os.PathLike] = None,
+        method: str = "geometric",
     ):
-        """Calculate slope and curvature of DEM."""
+        """
+        Calculate slope and curvature of DEM.
+
+        Parameters
+        ---------
+        slope_path : `str`, `os.pathlike`, optional
+            Path to save slope raster. If not provided, slope raster will be
+            saved in project directory.
+        curvature_path : `str`, `os.pathlike`, optional
+            Path to save curvature raster. If not provided, curvature raster
+            will be saved in project directory.
+        method : `str`, optional
+            Method for calculating curvature. Options include:
+            - "geometric": TODO: detailed description
+            - "laplacian": TODO: detailed description
+            Default is "geometric".
+        """
         if self._filtered_dem_path is None:
             raise ValueError(
                 "Filtered DEM must be created before calculating slope and curvature"
@@ -231,7 +242,7 @@ class PyGeoFlood(object):
         curvature_array = t.compute_dem_curvature(
             filtered_dem,
             pixel_scale,
-            self._config["curvature"]["method"],
+            method,
         )
 
         # write curvature array

@@ -36,7 +36,6 @@ dependencies = [
     "scipy",
     "six",
     "statsmodels",
-    "toml",
 ]
 
 [project.urls]
