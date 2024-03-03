@@ -168,9 +168,11 @@ class PyGeoFlood(object):
 
         pixel_scale = dem_profile["transform"][0]
         dem[dem == dem_profile["nodata"]] = np.nan
+
         edgeThresholdValue = t.lambda_nonlinear_filter(
             dem, pixel_scale, smoothing_quantile
         )
+
         filteredDemArray = t.anisodiff(
             img=dem,
             niter=n_iter,
@@ -251,6 +253,7 @@ class PyGeoFlood(object):
             pixel_scale,
             method,
         )
+        curvature_array[np.isnan(filtered_dem)] = np.nan
 
         # write curvature array
         if curvature_path is not None:
