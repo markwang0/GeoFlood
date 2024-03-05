@@ -1,5 +1,5 @@
 import numpy as np
-import scipy.signal as conv2
+from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
 
 np.warnings.filterwarnings(
@@ -47,7 +47,7 @@ def simple_gaussian_smoothing(
     # the edges NaNs spread from one pixel to a 5x5 set centered on
     # the NaN
     fillvalue = np.nanmean(inputDemArray[:])
-    smoothedDemArray = conv2.convolve2d(eI, gaussianFilter, "valid")
+    smoothedDemArray = convolve2d(eI, gaussianFilter, "valid")
     del inputDemArray, eI
     return smoothedDemArray
 
