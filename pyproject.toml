@@ -36,6 +36,7 @@ dependencies = [
     "scipy",
     "six",
     "statsmodels",
+    "whitebox",
 ]
 
 [project.urls]
