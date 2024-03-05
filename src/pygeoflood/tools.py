@@ -1,9 +1,12 @@
 import numpy as np
 import scipy.signal as conv2
-from pathlib import Path
-
-
 from scipy.stats.mstats import mquantiles
+
+np.warnings.filterwarnings(
+    action="ignore",
+    message="Invalid value encountered",
+    category=RuntimeWarning,
+)
 
 
 # Gaussian Filter
