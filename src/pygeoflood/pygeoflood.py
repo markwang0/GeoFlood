@@ -1,33 +1,8 @@
 import numpy as np
 import os
-import rasterio as rio
-import shutil
-import time
-
 
 from . import tools as t
 from pathlib import Path
-from typing import Union
-
-
-def time_it(func):
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        duration = end_time - start_time
-
-        # Check if duration is over 60 minutes (3600 seconds)
-        if duration > 3600:
-            print(f"{func.__name__} completed in {duration / 3600:.4f} hours")
-        # Check if duration is over 60 seconds
-        elif duration > 60:
-            print(f"{func.__name__} completed in {duration / 60:.4f} minutes")
-        else:
-            print(f"{func.__name__} completed in {duration:.4f} seconds")
-        return result
-
-    return wrapper
 
 
 class PyGeoFlood(object):
@@ -41,9 +16,9 @@ class PyGeoFlood(object):
 
         Parameters
         ---------
-        dem_path : `str`, `os.pathlike`
+        dem_path : `str`, `os.PathLike`
             Path to DEM in GeoTIFF format.
-        project_dir : `str`, `os.pathlike`, optional
+        project_dir : `str`, `os.PathLike`, optional
             Path to project directory. Default is current working directory.
         """
 
@@ -54,6 +29,7 @@ class PyGeoFlood(object):
         else:
             self._project_dir = dem_path.parent
 
+    # String representation of class
     def __repr__(self):
         attrs = "\n    ".join(
             f'{k[1:]}="{v}"' if isinstance(v, (str, Path)) else f"{k[1:]}={v!r}"
@@ -62,71 +38,17 @@ class PyGeoFlood(object):
         )
         return f"{self.__class__.__name__}(\n    {attrs}\n)"
 
-    @property
-    def dem_path(self) -> Union[str, os.PathLike]:
-        return self._dem_path
+    # create properties for class with getters and setters
+    dem_path = t.create_property("dem_path")
+    project_dir = t.create_property("project_dir")
+    filtered_dem_path = t.create_property("filtered_dem_path")
+    slope_path = t.create_property("slope_path")
+    curvature_path = t.create_property("curvature_path")
 
-    @dem_path.setter
-    def dem_path(self, value: Union[str, os.PathLike]):
-        if isinstance(value, (str, os.PathLike)):
-            self._dem_path = value
-        else:
-            raise TypeError("dem_path must be a string or os.PathLike object")
-
-    @property
-    def project_dir(self) -> Union[str, os.PathLike]:
-        return self._project_dir
-
-    @project_dir.setter
-    def project_dir(self, value: Union[str, os.PathLike]):
-        if isinstance(value, (str, os.PathLike)):
-            self._project_dir = value
-        else:
-            raise TypeError(
-                "project_dir must be a string or os.PathLike object"
-            )
-
-    @property
-    def filtered_dem_path(self) -> Union[str, os.PathLike]:
-        return self._filtered_dem_path
-
-    @filtered_dem_path.setter
-    def filtered_dem_path(self, value: Union[str, os.PathLike]):
-        if isinstance(value, (str, os.PathLike)):
-            self._filtered_dem_path = value
-        else:
-            raise TypeError(
-                "filtered_dem_path must be a string or os.PathLike object"
-            )
-
-    @property
-    def slope_path(self) -> Union[str, os.PathLike]:
-        return self._slope_path
-
-    @slope_path.setter
-    def slope_path(self, value: Union[str, os.PathLike]):
-        if isinstance(value, (str, os.PathLike)):
-            self._slope_path = value
-        else:
-            raise TypeError("slope_path must be a string or os.PathLike object")
-
-    @property
-    def curvature_path(self) -> Union[str, os.PathLike]:
-        return self._curvature_path
-
-    @curvature_path.setter
-    def curvature_path(self, value: Union[str, os.PathLike]):
-        if isinstance(value, (str, os.PathLike)):
-            self._curvature_path = value
-        else:
-            raise TypeError(
-                "curvature_path must be a string or os.PathLike object"
-            )
-
-    @time_it
+    @t.time_it
     def nonlinear_filter(
         self,
-        filtered_dem_path: Union[str, os.PathLike] = None,
+        filtered_dem_path: str | os.PathLike = None,
         method: str = "PeronaMalik2",
         smoothing_quantile: float = 0.9,
         time_increment: float = 0.1,
@@ -138,9 +60,9 @@ class PyGeoFlood(object):
 
         Parameters
         ---------
-        dem_path : `str`, `os.pathlike`
+        dem_path : `str`, `os.PathLike`
             Path to DEM in GeoTIFF format.
-        filtered_dem_path : `str`, `os.pathlike`, optional
+        filtered_dem_path : `str`, `os.PathLike`, optional
             Path to save filtered DEM. If not provided, filtered DEM will be
             saved in project directory.
         method : `str`, optional
@@ -161,13 +83,9 @@ class PyGeoFlood(object):
         sigma_squared : `float`, optional
             Variance of Gaussian filter. Default is 0.05.
         """
-        # read in DEM
-        with rio.open(self._dem_path) as ds:
-            dem = ds.read(1)
-            dem_profile = ds.profile
 
-        pixel_scale = dem_profile["transform"][0]
-        dem[dem == dem_profile["nodata"]] = np.nan
+        # read original DEM
+        dem, dem_profile, pixel_scale = t.read_raster(self._dem_path)
 
         edgeThresholdValue = t.lambda_nonlinear_filter(
             dem, pixel_scale, smoothing_quantile
@@ -182,27 +100,22 @@ class PyGeoFlood(object):
             option=method,
         )
 
-        # write filtered DEM with lzw compression
-        dem_profile.update(compress="lzw")
+        # write filtered DEM
+        self._filtered_dem_path = t.write_raster(
+            raster=filteredDemArray,
+            profile=dem_profile,
+            write_path=filtered_dem_path,
+            project_dir=self._project_dir,
+            dem_name=self._dem_path.stem,
+            suffix="filtered",
+        )
+        print(f"Filtered DEM written to {self._filtered_dem_path}")
 
-        if filtered_dem_path is not None:
-            filtered_dem = Path(filtered_dem_path)
-        else:
-            # append to DEM filename, save in same directory
-            filtered_dem = Path(
-                self._project_dir,
-                f"{self._dem_path.stem}_PM_filtered.tif",
-            )
-        self._filtered_dem_path = filtered_dem
-
-        with rio.open(self._filtered_dem_path, "w", **dem_profile) as ds:
-            ds.write(filteredDemArray, 1)
-
-    @time_it
+    @t.time_it
     def slope_curvature(
         self,
-        slope_path: Union[str, os.PathLike] = None,
-        curvature_path: Union[str, os.PathLike] = None,
+        slope_path: str | os.PathLike = None,
+        curvature_path: str | os.PathLike = None,
         method: str = "geometric",
     ):
         """
@@ -210,10 +123,10 @@ class PyGeoFlood(object):
 
         Parameters
         ---------
-        slope_path : `str`, `os.pathlike`, optional
+        slope_path : `str`, `os.PathLike`, optional
             Path to save slope raster. If not provided, slope raster will be
             saved in project directory.
-        curvature_path : `str`, `os.pathlike`, optional
+        curvature_path : `str`, `os.PathLike`, optional
             Path to save curvature raster. If not provided, curvature raster
             will be saved in project directory.
         method : `str`, optional
@@ -226,28 +139,28 @@ class PyGeoFlood(object):
             raise ValueError(
                 "Filtered DEM must be created before calculating slope and curvature"
             )
-        with rio.open(self._filtered_dem_path) as ds:
-            filtered_dem = ds.read(1)
-            filtered_dem_profile = ds.profile
 
-        print("computing slope")
-        pixel_scale = filtered_dem_profile["transform"][0]
+        # read filtered DEM
+        filtered_dem, filtered_dem_profile, pixel_scale = t.read_raster(
+            self._filtered_dem_path
+        )
+
+        print("Computing slope")
         slope_array = t.compute_dem_slope(filtered_dem, pixel_scale)
         slope_array[np.isnan(filtered_dem)] = np.nan
 
         # write slope array
-        if slope_path is not None:
-            slope = Path(slope_path)
-        else:
-            slope = Path(
-                self._project_dir,
-                f"{self._dem_path.stem}_slope.tif",
-            )
-        self._slope_path = slope
-        with rio.open(self._slope_path, "w", **filtered_dem_profile) as ds:
-            ds.write(slope_array, 1)
+        self._slope_path = t.write_raster(
+            raster=slope_array,
+            profile=filtered_dem_profile,
+            write_path=slope_path,
+            project_dir=self._project_dir,
+            dem_name=self._dem_path.stem,
+            suffix="slope",
+        )
+        print(f"Slope raster written to {self._slope_path}")
 
-        print("computing curvature")
+        print("Computing curvature")
         curvature_array = t.compute_dem_curvature(
             filtered_dem,
             pixel_scale,
@@ -256,13 +169,12 @@ class PyGeoFlood(object):
         curvature_array[np.isnan(filtered_dem)] = np.nan
 
         # write curvature array
-        if curvature_path is not None:
-            curvature = Path(curvature_path)
-        else:
-            curvature = Path(
-                self._project_dir,
-                f"{self._dem_path.stem}_curvature.tif",
-            )
-        self._curvature_path = curvature
-        with rio.open(self._curvature_path, "w", **filtered_dem_profile) as ds:
-            ds.write(curvature_array, 1)
+        self._curvature_path = t.write_raster(
+            raster=curvature_array,
+            profile=filtered_dem_profile,
+            write_path=curvature_path,
+            project_dir=self._project_dir,
+            dem_name=self._dem_path.stem,
+            suffix="curvature",
+        )
+        print(f"Curvature raster written to {self._curvature_path}")

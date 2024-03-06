@@ -7,25 +7,26 @@ from whitebox.whitebox_tools import WhiteboxTools
 
 wbt = WhiteboxTools()
 wbt.set_verbose_mode(True)  # False suppresses all output
+wbt.set_compress_rasters(True)
 workdir = Path(Path(__file__).parent, "data")
 wbt.set_working_dir(workdir)
 
 # input
-filtered_dem = "OC1mTest_PM_filtered.tif"
+filtered_dem = "OC1mTest_filtered.tif"
 
 # outputs
-filtered_filled_dem = "OC1mTest_PM_filtered_filled.tif"
-quinn_mfd_fac = "OC1mTest_PM_filtered_filled_mfd_fac.tif"
-dinf_fac = "OC1mTest_PM_filtered_filled_dinf_fac.tif"
-dinf_fdr = "OC1mTest_PM_filtered_filled_dinf_fdr.tif"
-d8_fdr = "OC1mTest_PM_filtered_filled_d8_fdr.tif"
-basins = "OC1mTest_PM_filtered_filled_d8_fdr_basins.tif"
+filtered_filled_dem = "OC1mTest_filtered_filled.tif"
+quinn_mfd_fac = "OC1mTest_filtered_filled_mfd_fac.tif"
+dinf_fac = "OC1mTest_filtered_filled_dinf_fac.tif"
+dinf_fdr = "OC1mTest_filtered_filled_dinf_fdr.tif"
+d8_fdr = "OC1mTest_filtered_filled_d8_fdr.tif"
+basins = "OC1mTest_filtered_filled_d8_fdr_basins.tif"
 
 # fill DEM depressions
 wbt.fill_depressions(
     dem=filtered_dem,
     output=filtered_filled_dem,
-    fix_flats=False,
+    fix_flats=True,
 )
 
 # calculate MFD flow accumulation

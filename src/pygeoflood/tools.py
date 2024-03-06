@@ -1,21 +1,189 @@
 import numpy as np
+import os
+import time
+from pathlib import Path
+import rasterio as rio
+import warnings
+
 from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
 
-np.warnings.filterwarnings(
+warnings.filterwarnings(
     action="ignore",
     message="Invalid value encountered",
     category=RuntimeWarning,
 )
 
 
+def create_property(name: str) -> property:
+    """
+    Create a property with a storage name prefixed by an underscore.
+
+    Parameters
+    ----------
+    name : `str`
+        Name of property.
+
+    Returns
+    -------
+    prop : `property`
+        Property with storage name prefixed by an underscore.
+    """
+    storage_name = f"_{name}"
+
+    @property
+    def prop(self) -> str | os.PathLike:
+        return getattr(self, storage_name)
+
+    @prop.setter
+    def prop(self, value: str | os.PathLike):
+        if isinstance(value, (str, os.PathLike)):
+            setattr(self, storage_name, value)
+        else:
+            raise TypeError(f"{name} must be a string or os.PathLike object")
+
+    return prop
+
+
+# time function dectorator
+def time_it(func: callable) -> callable:
+    """
+    Decorator function to time the execution of a function
+
+    Parameters
+    ----------
+    func : `function`
+        Function to time.
+
+    Returns
+    -------
+    wrapper : `function`
+        Wrapped function.
+    """
+
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        duration = end_time - start_time
+
+        # Check if duration is over 60 minutes (3600 seconds)
+        if duration > 3600:
+            print(f"{func.__name__} completed in {duration / 3600:.4f} hours")
+        # Check if duration is over 60 seconds
+        elif duration > 60:
+            print(f"{func.__name__} completed in {duration / 60:.4f} minutes")
+        else:
+            print(f"{func.__name__} completed in {duration:.4f} seconds")
+        return result
+
+    return wrapper
+
+
+def read_raster(
+    raster_path: str,
+) -> tuple[np.ndarray, rio.profiles.Profile | dict, float | int]:
+    """
+    Read a raster file and return the array, rasterio profile, and pixel scale.
+
+    Parameters
+    ----------
+    raster_path : `str`
+        Path to raster file.
+
+    Returns
+    -------
+    raster : `np.ndarray`
+        Array of raster values.
+    profile : `rio.profiles.Profile` | `dict`
+        Raster profile.
+    pixel_scale : `float` | `int`
+        Pixel scale of raster.
+    """
+    with rio.open(raster_path) as ds:
+        raster = ds.read(1)
+        profile = ds.profile
+    pixel_scale = profile["transform"][0]
+    raster[raster == profile["nodata"]] = np.nan
+    return raster, profile, pixel_scale
+
+
+def write_raster(
+    raster: np.ndarray,
+    profile: rio.profiles.Profile | dict,
+    write_path: str | os.PathLike,
+    project_dir: str | os.PathLike,
+    dem_name: str,
+    suffix: str,
+    compression: str = "lzw",
+) -> str | os.PathLike:
+    """
+    Write a raster file.
+
+    Parameters
+    ----------
+    raster : `np.ndarray`
+        Array of raster values.
+    profile : `rio.profiles.Profile` | `dict`
+        Raster profile.
+    write_path : `str` | `os.PathLike`
+        Path to save raster file.
+    project_dir : `str` | `os.PathLike`
+        Path to project directory.
+    dem_name : `str`
+        Name of DEM file.
+    suffix : `str`
+        Suffix to append to DEM filename. Only used if `write_path` is not
+        provided.
+    compression : `str`, optional
+        Compression method. Default is "lzw".
+
+    Returns
+    -------
+    write_path : `str` | `os.PathLike`
+        Path to saved raster file.
+    """
+
+    profile.update(compress=compression)
+
+    if write_path is not None:
+        written = Path(write_path)
+    else:
+        # append to DEM filename, save in project directory
+        written = Path(
+            project_dir,
+            f"{dem_name}_{suffix}.tif",
+        )
+
+    with rio.open(written, "w", **profile) as ds:
+        ds.write(raster, 1)
+
+    return written
+
+
 # Gaussian Filter
 def simple_gaussian_smoothing(
-    inputDemArray, kernelWidth, diffusionSigmaSquared
+    inputDemArray: np.ndarray,
+    kernelWidth,
+    diffusionSigmaSquared: float,
 ) -> np.ndarray:
     """
     smoothing input array with gaussian filter
     Code is vectorized for efficiency Harish Sangireddy
+
+    Parameters
+    ----------
+    inputDemArray : `np.ndarray`
+        Array of input DEM values.
+    kernelWidth :
+        Width of Gaussian kernel.
+    diffusionSigmaSquared : `float`
+        Diffusion sigma squared.
+
+    Returns
+    -------
+    smoothedDemArray : `np.ndarray`
+        Array of smoothed DEM values.
     """
     [Ny, Nx] = inputDemArray.shape
     halfKernelWidth = int((kernelWidth - 1) / 2)
@@ -53,13 +221,37 @@ def simple_gaussian_smoothing(
 
 
 def anisodiff(
-    img,
-    niter,
-    kappa,
-    gamma,
-    step=(1.0, 1.0),
-    option="PeronaMalik2",
+    img: np.ndarray,
+    niter: int,
+    kappa: float,
+    gamma: float,
+    step: tuple[float, float] = (1.0, 1.0),
+    option: str = "PeronaMalik2",
 ) -> np.ndarray:
+    """
+    Anisotropic diffusion.
+
+    Parameters
+    ----------
+    img : `np.ndarray`
+        Array of input image values.
+    niter : `int`
+        Number of iterations.
+    kappa : `float`
+        Edge threshold value.
+    gamma : `float`
+        Time increment.
+    step : `tuple`, optional
+        Step size. Default is (1.0, 1.0).
+    option : `str`, optional
+        Diffusion option. Default is "PeronaMalik2".
+
+    Returns
+    -------
+    imgout : `np.ndarray`
+        Array of filtered image values.
+    """
+
     # initialize output array
     img = img.astype("float32")
     imgout = img.copy()
@@ -105,10 +297,29 @@ def anisodiff(
 
 
 def lambda_nonlinear_filter(
-    nanDemArray,
-    demPixelScale,
-    smoothing_quantile,
+    nanDemArray: np.ndarray,
+    demPixelScale: float,
+    smoothing_quantile: float,
 ) -> float:
+    """
+    Compute the threshold lambda used in Perona-Malik nonlinear filtering.
+
+    Parameters
+    ----------
+    nanDemArray : `np.ndarray`
+        Array of input DEM values.
+    demPixelScale : `float`
+        Pixel scale of DEM.
+    smoothing_quantile : `float`
+        Quantile for calculating Perona-Malik nonlinear filter edge threshold
+        value (kappa).
+
+    Returns
+    -------
+    edgeThresholdValue : `float`
+        Edge threshold value.
+    """
+
     print("Computing slope of raw DTM")
     slopeXArray, slopeYArray = np.gradient(nanDemArray, demPixelScale)
     slopeMagnitudeDemArray = np.sqrt(slopeXArray**2 + slopeYArray**2)
@@ -124,9 +335,7 @@ def lambda_nonlinear_filter(
 
     print("Computing lambda = q-q-based nonlinear filtering threshold")
     slopeMagnitudeDemArray = slopeMagnitudeDemArray.flatten()
-    slopeMagnitudeDemArray = slopeMagnitudeDemArray[
-        ~np.isnan(slopeMagnitudeDemArray)
-    ]
+    slopeMagnitudeDemArray = slopeMagnitudeDemArray[~np.isnan(slopeMagnitudeDemArray)]
     print("DEM smoothing Quantile:", smoothing_quantile)
     edgeThresholdValue = (
         mquantiles(
@@ -138,7 +347,26 @@ def lambda_nonlinear_filter(
     return edgeThresholdValue
 
 
-def compute_dem_slope(filteredDemArray, pixelDemScale) -> np.ndarray:
+def compute_dem_slope(
+    filteredDemArray: np.ndarray,
+    pixelDemScale: float,
+) -> np.ndarray:
+    """
+    Compute slope of DEM.
+
+    Parameters
+    ----------
+    filteredDemArray : `np.ndarray`
+        Array of filtered DEM values.
+    pixelDemScale : `float`
+        Pixel scale of DEM.
+
+    Returns
+    -------
+    slopeDemArray : `np.ndarray`
+        Array of DEM slope values.
+    """
+
     slopeYArray, slopeXArray = np.gradient(filteredDemArray, pixelDemScale)
     slopeDemArray = np.sqrt(slopeXArray**2 + slopeYArray**2)
     slopeMagnitudeDemArrayQ = slopeDemArray
@@ -165,10 +393,31 @@ def compute_dem_slope(filteredDemArray, pixelDemScale) -> np.ndarray:
 
 
 def compute_dem_curvature(
-    demArray,
-    pixelDemScale,
-    curvatureCalcMethod,
+    demArray: np.ndarray,
+    pixelDemScale: float,
+    curvatureCalcMethod: str,
 ) -> np.ndarray:
+    """
+    Compute curvature of DEM.
+
+    Parameters
+    ----------
+    demArray : `np.ndarray`
+        Array of DEM values.
+    pixelDemScale : `float`
+        Pixel scale of DEM.
+    curvatureCalcMethod : `str`, optional
+        Method for calculating curvature. Options include:
+        - "geometric": TODO: detailed description
+        - "laplacian": TODO: detailed description
+        Default is "geometric".
+
+    Returns
+    -------
+    curvatureDemArray : `np.ndarray`
+        Array of DEM curvature values.
+    """
+
     # OLD:
     # gradXArray, gradYArray = np.gradient(demArray, pixelDemScale)
     # NEW:
@@ -197,9 +446,7 @@ def compute_dem_curvature(
     print(" curvature statistics")
     tt = curvatureDemArray[~np.isnan(curvatureDemArray[:])]
     print(" non-nan curvature cell number:", tt.shape[0])
-    finiteCurvatureDemList = curvatureDemArray[
-        np.isfinite(curvatureDemArray[:])
-    ]
+    finiteCurvatureDemList = curvatureDemArray[np.isfinite(curvatureDemArray[:])]
     print(" non-nan finite curvature cell number:", end=" ")
     finiteCurvatureDemList.shape[0]
     curvatureDemMean = np.nanmean(finiteCurvatureDemList)
