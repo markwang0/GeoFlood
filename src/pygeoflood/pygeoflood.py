@@ -256,7 +256,7 @@ class PyGeoFlood(object):
         # fill DEM depressions
         # use absolute paths to avoid errors
         wbt.fill_depressions(
-            dem=self.dem_path.resolve(),
+            dem=self.filtered_dem_path.resolve(),
             output=self.filled_path.resolve(),
             fix_flats=True,
         )
