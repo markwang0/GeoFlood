@@ -5,6 +5,7 @@ from pathlib import Path
 import rasterio as rio
 import warnings
 
+from functools import wraps
 from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
 from whitebox.whitebox_tools import WhiteboxTools
@@ -63,6 +64,7 @@ def time_it(func: callable) -> callable:
         Wrapped function.
     """
 
+    @wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
@@ -372,9 +374,7 @@ def lambda_nonlinear_filter(
 
     print("Computing lambda = q-q-based nonlinear filtering threshold")
     slopeMagnitudeDemArray = slopeMagnitudeDemArray.flatten()
-    slopeMagnitudeDemArray = slopeMagnitudeDemArray[
-        ~np.isnan(slopeMagnitudeDemArray)
-    ]
+    slopeMagnitudeDemArray = slopeMagnitudeDemArray[~np.isnan(slopeMagnitudeDemArray)]
     print("DEM smoothing Quantile:", smoothing_quantile)
     edgeThresholdValue = (
         mquantiles(
@@ -486,9 +486,7 @@ def compute_dem_curvature(
     print(" curvature statistics")
     tt = curvatureDemArray[~np.isnan(curvatureDemArray[:])]
     print(" non-nan curvature cell number:", tt.shape[0])
-    finiteCurvatureDemList = curvatureDemArray[
-        np.isfinite(curvatureDemArray[:])
-    ]
+    finiteCurvatureDemList = curvatureDemArray[np.isfinite(curvatureDemArray[:])]
     print(" non-nan finite curvature cell number:", end=" ")
     finiteCurvatureDemList.shape[0]
     curvatureDemMean = np.nanmean(finiteCurvatureDemList)
