@@ -19,7 +19,8 @@ class PyGeoFlood(object):
         dem_path : `str`, `os.PathLike`
             Path to DEM in GeoTIFF format.
         project_dir : `str`, `os.PathLike`, optional
-            Path to project directory. Default is current working directory.
+            Path to project directory. Default is the directory containing the
+            DEM. All outputs will be saved to this directory.
         """
 
         # automatically becomes a pathlib.Path object if not aleady
