@@ -7,6 +7,7 @@ import warnings
 
 from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
+from whitebox.whitebox_tools import WhiteboxTools
 
 warnings.filterwarnings(
     action="ignore",
@@ -15,19 +16,19 @@ warnings.filterwarnings(
 )
 
 
-def create_property(name: str) -> property:
+def path_property(name: str) -> property:
     """
-    Create a property with a storage name prefixed by an underscore.
+    Create a path property with a storage name prefixed by an underscore.
 
     Parameters
     ----------
     name : `str`
-        Name of property.
+        Name of path property.
 
     Returns
     -------
     prop : `property`
-        Property with storage name prefixed by an underscore.
+        Path property with storage name prefixed by an underscore.
     """
     storage_name = f"_{name}"
 
@@ -37,8 +38,9 @@ def create_property(name: str) -> property:
 
     @prop.setter
     def prop(self, value: str | os.PathLike):
+        # always convert to Path object
         if isinstance(value, (str, os.PathLike)):
-            setattr(self, storage_name, value)
+            setattr(self, storage_name, Path(value))
         else:
             raise TypeError(f"{name} must be a string or os.PathLike object")
 
@@ -111,10 +113,7 @@ def read_raster(
 def write_raster(
     raster: np.ndarray,
     profile: rio.profiles.Profile | dict,
-    write_path: str | os.PathLike,
-    project_dir: str | os.PathLike,
-    dem_name: str,
-    suffix: str,
+    file_path: str | os.PathLike,
     compression: str = "lzw",
 ) -> str | os.PathLike:
     """
@@ -126,8 +125,29 @@ def write_raster(
         Array of raster values.
     profile : `rio.profiles.Profile` | `dict`
         Raster profile.
-    write_path : `str` | `os.PathLike`
-        Path to save raster file.
+    compression : `str`, optional
+        Compression method. Default is "lzw".
+    """
+
+    profile.update(compress=compression)
+
+    with rio.open(file_path, "w", **profile) as ds:
+        ds.write(raster, 1)
+
+
+def get_file_path(
+    custom_path: str | os.PathLike,
+    project_dir: str | os.PathLike,
+    dem_name: str,
+    suffix: str,
+) -> str | os.PathLike:
+    """
+    Get file path.
+
+    Parameters
+    ----------
+    custom_path : `str` | `os.PathLike`
+        Optional custom path to save file.
     project_dir : `str` | `os.PathLike`
         Path to project directory.
     dem_name : `str`
@@ -135,30 +155,47 @@ def write_raster(
     suffix : `str`
         Suffix to append to DEM filename. Only used if `write_path` is not
         provided.
-    compression : `str`, optional
-        Compression method. Default is "lzw".
 
     Returns
     -------
-    write_path : `str` | `os.PathLike`
-        Path to saved raster file.
+    file_path : `str` | `os.PathLike`
+        Path to write file.
     """
-
-    profile.update(compress=compression)
-
-    if write_path is not None:
-        written = Path(write_path)
+    if custom_path is not None:
+        file_path = Path(custom_path)
     else:
         # append to DEM filename, save in project directory
-        written = Path(
+        file_path = Path(
             project_dir,
             f"{dem_name}_{suffix}.tif",
         )
 
-    with rio.open(written, "w", **profile) as ds:
-        ds.write(raster, 1)
+    return file_path
 
-    return written
+
+def get_WhiteboxTools(
+    verbose: bool = False,
+    compress: bool = True,
+):
+    """
+    Get preconfigured WhiteboxTools instance.
+
+    Parameters
+    ----------
+    verbose : `bool`, optional
+        Verbose mode. Default is False.
+    compress : `bool`, optional
+        Compress rasters. Default is True.
+
+    Returns
+    -------
+    wbt : `WhiteboxTools`
+        WhiteboxTools instance.
+    """
+    wbt = WhiteboxTools()
+    wbt.set_verbose_mode(verbose)
+    wbt.set_compress_rasters(compress)
+    return wbt
 
 
 # Gaussian Filter
@@ -335,7 +372,9 @@ def lambda_nonlinear_filter(
 
     print("Computing lambda = q-q-based nonlinear filtering threshold")
     slopeMagnitudeDemArray = slopeMagnitudeDemArray.flatten()
-    slopeMagnitudeDemArray = slopeMagnitudeDemArray[~np.isnan(slopeMagnitudeDemArray)]
+    slopeMagnitudeDemArray = slopeMagnitudeDemArray[
+        ~np.isnan(slopeMagnitudeDemArray)
+    ]
     print("DEM smoothing Quantile:", smoothing_quantile)
     edgeThresholdValue = (
         mquantiles(
@@ -389,11 +428,12 @@ def compute_dem_slope(
     )
     print(" mean slope:", np.nanmean(slopeDemArray[:]))
     print(" stdev slope:", np.nanstd(slopeDemArray[:]))
+    slopeDemArray[np.isnan(filteredDemArray)] = np.nan
     return slopeDemArray
 
 
 def compute_dem_curvature(
-    demArray: np.ndarray,
+    filteredDemArray: np.ndarray,
     pixelDemScale: float,
     curvatureCalcMethod: str,
 ) -> np.ndarray:
@@ -402,7 +442,7 @@ def compute_dem_curvature(
 
     Parameters
     ----------
-    demArray : `np.ndarray`
+    filteredDemArray : `np.ndarray`
         Array of DEM values.
     pixelDemScale : `float`
         Pixel scale of DEM.
@@ -421,7 +461,7 @@ def compute_dem_curvature(
     # OLD:
     # gradXArray, gradYArray = np.gradient(demArray, pixelDemScale)
     # NEW:
-    gradYArray, gradXArray = np.gradient(demArray, pixelDemScale)
+    gradYArray, gradXArray = np.gradient(filteredDemArray, pixelDemScale)
 
     slopeArrayT = np.sqrt(gradXArray**2 + gradYArray**2)
     if curvatureCalcMethod == "geometric":
@@ -446,11 +486,14 @@ def compute_dem_curvature(
     print(" curvature statistics")
     tt = curvatureDemArray[~np.isnan(curvatureDemArray[:])]
     print(" non-nan curvature cell number:", tt.shape[0])
-    finiteCurvatureDemList = curvatureDemArray[np.isfinite(curvatureDemArray[:])]
+    finiteCurvatureDemList = curvatureDemArray[
+        np.isfinite(curvatureDemArray[:])
+    ]
     print(" non-nan finite curvature cell number:", end=" ")
     finiteCurvatureDemList.shape[0]
     curvatureDemMean = np.nanmean(finiteCurvatureDemList)
     curvatureDemStdDevn = np.nanstd(finiteCurvatureDemList)
     print(" mean: ", curvatureDemMean)
     print(" standard deviation: ", curvatureDemStdDevn)
+    curvatureDemArray[np.isnan(filteredDemArray)] = np.nan
     return curvatureDemArray
