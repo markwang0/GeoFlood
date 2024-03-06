@@ -67,8 +67,9 @@ class PyGeoFlood(object):
 
         Parameters
         ---------
-        dem_path : `str`, `os.PathLike`
-            Path to DEM in GeoTIFF format.
+        dem_path : `str`, `os.PathLike`, optional
+            Path to DEM in GeoTIFF format. If not provided, DEM path provided
+            when creating the PyGeoFlood instance will be used.
         custom_path : `str`, `os.PathLike`, optional
             Custom path to save filtered DEM. If not provided, filtered DEM
             will be saved in project directory.
