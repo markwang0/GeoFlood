@@ -224,6 +224,7 @@ class PyGeoFlood(object):
     def fill_depressions(
         self,
         custom_path: str | os.PathLike = None,
+        **wbt_args,
     ):
         """
         Fill filtered DEM depressions. This is a wrapper for the WhiteboxTools
@@ -231,9 +232,12 @@ class PyGeoFlood(object):
 
         Parameters
         ---------
-        filled_path : `str`, `os.PathLike`, optional
+        custom_path : `str`, `os.PathLike`, optional
             Path to save filled DEM. If not provided, filled DEM will be saved
             in project directory.
+        wbt_args : `dict`, optional
+            Additional arguments to pass to the WhiteboxTools `fill_depressions`
+            function. See WhiteboxTools documentation for details.
         """
         if self.filtered_dem_path is None:
             raise ValueError(
@@ -259,16 +263,16 @@ class PyGeoFlood(object):
             dem=self.filtered_dem_path.resolve(),
             output=self.filled_path.resolve(),
             fix_flats=True,
+            **wbt_args,
         )
 
-        print(
-            f"Filled DEM written to {str(self.filled_path)}"
-        )
+        print(f"Filled DEM written to {str(self.filled_path)}")
 
     @t.time_it
     def mfd_flow_accumulation(
         self,
         custom_path: str | os.PathLike = None,
+        **wbt_args,
     ):
         """
         Calculate MFD flow accumulation. This is a wrapper for the WhiteboxTools
@@ -279,6 +283,9 @@ class PyGeoFlood(object):
         mfd_fac_path : `str`, `os.PathLike`, optional
             Path to save MFD flow accumulation raster. If not provided, MFD flow
             accumulation raster will be saved in project directory.
+        wbt_args : `dict`, optional
+            Additional arguments to pass to the WhiteboxTools `quinn_flow_accumulation`
+            function. See WhiteboxTools documentation for details.
         """
         if self.filled_path is None:
             raise ValueError(
@@ -304,6 +311,7 @@ class PyGeoFlood(object):
             dem=self.filled_path.resolve(),
             output=self.mfd_fac_path.resolve(),
             out_type="cells",
+            **wbt_args,
         )
 
         print(
@@ -314,6 +322,7 @@ class PyGeoFlood(object):
     def d8_flow_direction(
         self,
         custom_path: str | os.PathLike = None,
+        **wbt_args,
     ):
         """
         Calculate D8 flow direction. This is a wrapper for the WhiteboxTools
@@ -321,9 +330,12 @@ class PyGeoFlood(object):
 
         Parameters
         ---------
-        d8_fdr_path : `str`, `os.PathLike`, optional
+        custom_path : `str`, `os.PathLike`, optional
             Path to save D8 flow direction raster. If not provided, D8 flow
             direction raster will be saved in project directory.
+        wbt_args : `dict`, optional
+            Additional arguments to pass to the WhiteboxTools `d8_pointer`
+            function. See WhiteboxTools documentation for details.
         """
         if self.filled_path is None:
             raise ValueError(
@@ -348,25 +360,28 @@ class PyGeoFlood(object):
         wbt.d8_pointer(
             dem=self.filled_path.resolve(),
             output=self.d8_fdr_path.resolve(),
+            **wbt_args,
         )
 
-        print(
-            f"D8 flow direction raster written to {str(self.d8_fdr_path)}"
-        )
+        print(f"D8 flow direction raster written to {str(self.d8_fdr_path)}")
 
     @t.time_it
     def basins(
         self,
         custom_path: str | os.PathLike = None,
+        **wbt_args,
     ):
         """
         Delineate basins. This is a wrapper for the WhiteboxTools `basins` function.
 
         Parameters
         ---------
-        basins_path : `str`, `os.PathLike`, optional
+        custom_path : `str`, `os.PathLike`, optional
             Path to save basins raster. If not provided, basins raster will be
             saved in project directory.
+        wbt_args : `dict`, optional
+            Additional arguments to pass to the WhiteboxTools `basins` function.
+            See WhiteboxTools documentation for details.
         """
         if self.d8_fdr_path is None:
             raise ValueError(
@@ -391,8 +406,7 @@ class PyGeoFlood(object):
         wbt.basins(
             d8_pntr=self.d8_fdr_path.resolve(),
             output=self.basins_path.resolve(),
+            **wbt_args,
         )
 
-        print(
-            f"Basins raster written to {str(self.basins_path)}"
-        )
+        print(f"Basins raster written to {str(self.basins_path)}")
