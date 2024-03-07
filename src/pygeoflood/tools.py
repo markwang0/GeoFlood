@@ -108,7 +108,9 @@ def read_raster(
         raster = ds.read(1)
         profile = ds.profile
     pixel_scale = profile["transform"][0]
-    raster[raster == profile["nodata"]] = np.nan
+    # convert nodata to np.nan if dtype is float
+    if "float" in profile["dtype"].lower():
+        raster[raster == profile["nodata"]] = np.nan
     return raster, profile, pixel_scale
 
 

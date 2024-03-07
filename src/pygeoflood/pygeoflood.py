@@ -1,7 +1,7 @@
 import numpy as np
-import os
 
 from . import tools as t
+from os import PathLike
 from pathlib import Path
 
 
@@ -34,7 +34,11 @@ class PyGeoFlood(object):
     # String representation of class
     def __repr__(self):
         attrs = "\n    ".join(
-            f'{k[1:]}="{v}"' if isinstance(v, (str, Path)) else f"{k[1:]}={v!r}"
+            (
+                f'{k[1:]}="{v}",'
+                if isinstance(v, (str, Path))
+                else f"{k[1:]}={v!r},"
+            )
             for k, v in self.__dict__.items()
             if v is not None
         )
@@ -51,11 +55,12 @@ class PyGeoFlood(object):
     mfd_fac_path = t.path_property("mfd_fac_path")
     d8_fdr_path = t.path_property("d8_fdr_path")
     basins_path = t.path_property("basins_path")
+    outlets_path = t.path_property("outlets_path")
 
     @t.time_it
     def nonlinear_filter(
         self,
-        custom_path: str | os.PathLike = None,
+        custom_path: str | PathLike = None,
         method: str = "PeronaMalik2",
         smoothing_quantile: float = 0.9,
         time_increment: float = 0.1,
@@ -127,7 +132,7 @@ class PyGeoFlood(object):
     @t.time_it
     def slope(
         self,
-        custom_path: str | os.PathLike = None,
+        custom_path: str | PathLike = None,
     ):
         """
         Calculate slope of DEM.
@@ -170,7 +175,7 @@ class PyGeoFlood(object):
     @t.time_it
     def curvature(
         self,
-        custom_path: str | os.PathLike = None,
+        custom_path: str | PathLike = None,
         method: str = "geometric",
     ):
         """
@@ -223,7 +228,7 @@ class PyGeoFlood(object):
     @t.time_it
     def fill_depressions(
         self,
-        custom_path: str | os.PathLike = None,
+        custom_path: str | PathLike = None,
         **wbt_args,
     ):
         """
@@ -271,7 +276,7 @@ class PyGeoFlood(object):
     @t.time_it
     def mfd_flow_accumulation(
         self,
-        custom_path: str | os.PathLike = None,
+        custom_path: str | PathLike = None,
         **wbt_args,
     ):
         """
@@ -321,7 +326,7 @@ class PyGeoFlood(object):
     @t.time_it
     def d8_flow_direction(
         self,
-        custom_path: str | os.PathLike = None,
+        custom_path: str | PathLike = None,
         **wbt_args,
     ):
         """
@@ -366,9 +371,63 @@ class PyGeoFlood(object):
         print(f"D8 flow direction raster written to {str(self.d8_fdr_path)}")
 
     @t.time_it
+    def outlets(
+        self,
+        custom_path: str | PathLike = None,
+    ):
+        """
+        Create outlets raster. Outlets are cells with a flow direction
+        of 0 in the D8 flow direction raster.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Path to save outlets raster. If not provided, outlets raster will be
+            saved in project directory.
+        """
+        if self.d8_fdr_path is None:
+            raise ValueError(
+                "D8 flow direction raster must be created before creating outlets raster"
+            )
+
+        print("Creating outlets raster")
+
+        # read reference raster
+        filtered_dem, _, _ = t.read_raster(self.filtered_dem_path)
+
+        # read D8 flow direction raster
+        outlets, profile, _ = t.read_raster(self.d8_fdr_path)
+
+        # get outlets as 1, all else as 0
+        # WBT D8 assigns 0 to both outlet cells and nodata cells
+        # make all cells 1 that are not outlets or nodata
+        outlets[outlets != 0] = 1
+        # make all nodata cells 1
+        outlets[np.isnan(filtered_dem)] = 1
+        # flip to get outlets as 1, all else as 0
+        outlets = 1 - outlets
+
+        # get file path for outlets raster
+        self.outlets_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="outlets",
+        )
+
+        # write outlets raster
+        t.write_raster(
+            raster=outlets,
+            profile=profile,
+            file_path=self.outlets_path,
+        )
+
+        print(f"Outlets raster written to {str(self.outlets_path)}")
+
+    @t.time_it
     def basins(
         self,
-        custom_path: str | os.PathLike = None,
+        custom_path: str | PathLike = None,
         **wbt_args,
     ):
         """
