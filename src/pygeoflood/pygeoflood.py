@@ -34,11 +34,7 @@ class PyGeoFlood(object):
     # String representation of class
     def __repr__(self):
         attrs = "\n    ".join(
-            (
-                f'{k[1:]}="{v}",'
-                if isinstance(v, (str, Path))
-                else f"{k[1:]}={v!r},"
-            )
+            (f'{k[1:]}="{v}",' if isinstance(v, (str, Path)) else f"{k[1:]}={v!r},")
             for k, v in self.__dict__.items()
             if v is not None
         )
@@ -56,6 +52,9 @@ class PyGeoFlood(object):
     d8_fdr_path = t.path_property("d8_fdr_path")
     basins_path = t.path_property("basins_path")
     outlets_path = t.path_property("outlets_path")
+    flow_skeleton_path = t.path_property("flow_skeleton_path")
+    curvature_skeleton_path = t.path_property("curvature_skeleton_path")
+    combined_skeleton_path = t.path_property("combined_skeleton_path")
 
     @t.time_it
     def nonlinear_filter(
@@ -245,9 +244,7 @@ class PyGeoFlood(object):
             function. See WhiteboxTools documentation for details.
         """
         if self.filtered_dem_path is None:
-            raise ValueError(
-                "Filtered DEM must be created before filling depressions"
-            )
+            raise ValueError("Filtered DEM must be created before filling depressions")
 
         print("Filling depressions on the filtered DEM")
 
@@ -319,9 +316,7 @@ class PyGeoFlood(object):
             **wbt_args,
         )
 
-        print(
-            f"MFD flow accumulation raster written to {str(self.mfd_fac_path)}"
-        )
+        print(f"MFD flow accumulation raster written to {str(self.mfd_fac_path)}")
 
     @t.time_it
     def d8_flow_direction(
@@ -347,7 +342,7 @@ class PyGeoFlood(object):
                 "Filled DEM must be created before calculating D8 flow direction"
             )
 
-        print("Calculating D8 flow directions")
+        print("Calculating D8 flow direction")
 
         # get file path for D8 flow direction
         self.d8_fdr_path = t.get_file_path(
@@ -368,6 +363,20 @@ class PyGeoFlood(object):
             **wbt_args,
         )
 
+        # for some reason WBT assigns D8 values to nodata cells
+        # add back nodata cells from filtered DEM
+        filtered_dem, filtered_profile, _ = t.read_raster(self.filtered_dem_path)
+        filtered_dem[filtered_dem == filtered_profile["nodata"]] = np.nan
+        # read D8 flow direction raster
+        d8_fdr, d8_profile, _ = t.read_raster(self.d8_fdr_path)
+        d8_fdr[np.isnan(filtered_dem)] = d8_profile["nodata"]
+        # write D8 flow direction raster
+        t.write_raster(
+            raster=d8_fdr,
+            profile=d8_profile,
+            file_path=self.d8_fdr_path,
+        )
+
         print(f"D8 flow direction raster written to {str(self.d8_fdr_path)}")
 
     @t.time_it
@@ -376,8 +385,9 @@ class PyGeoFlood(object):
         custom_path: str | PathLike = None,
     ):
         """
-        Create outlets raster. Outlets are cells with a flow direction
-        of 0 in the D8 flow direction raster.
+        Create outlets raster. Outlets are cells which have no downslope neighbors
+        according to the D8 flow direction. Outlets are designated by 1, all other
+        cells are designated by 0.
 
         Parameters
         ---------
@@ -392,20 +402,16 @@ class PyGeoFlood(object):
 
         print("Creating outlets raster")
 
-        # read reference raster
-        filtered_dem, _, _ = t.read_raster(self.filtered_dem_path)
-
-        # read D8 flow direction raster
+        # read D8 flow direction raster, outlets designated by WBT as 0
         outlets, profile, _ = t.read_raster(self.d8_fdr_path)
-
+        nan_mask = outlets == profile["nodata"]
         # get outlets as 1, all else as 0
-        # WBT D8 assigns 0 to both outlet cells and nodata cells
-        # make all cells 1 that are not outlets or nodata
+        # make all cells 1 that are not outlets
         outlets[outlets != 0] = 1
-        # make all nodata cells 1
-        outlets[np.isnan(filtered_dem)] = 1
         # flip to get outlets as 1, all else as 0
         outlets = 1 - outlets
+        # reset nodata cells, which were set to 0 above
+        outlets[nan_mask] = profile["nodata"]
 
         # get file path for outlets raster
         self.outlets_path = t.get_file_path(
@@ -469,3 +475,109 @@ class PyGeoFlood(object):
         )
 
         print(f"Basins raster written to {str(self.basins_path)}")
+
+    @t.time_it
+    def skeleton_definition(
+        self,
+        custom_path: str | PathLike = None,
+        fac_threshold: float = 3000,
+        write_flow_skeleton: bool = False,
+        write_curvature_skeleton: bool = False,
+    ):
+        """
+        Define skeleton from flow and curvature.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save combined skeleton. If not provided, combined
+            skeleton will be saved in project directory.
+        fac_threshold : `float`, optional
+            Flow accumlulation threshold for defining flow skeleton. Default is 3000.
+        write_flow_skeleton : `bool`, optional
+            Whether to write flow skeleton to file. Default is False.
+        write_curvature_skeleton : `bool`, optional
+            Whether to write curvature skeleton to file. Default is False.
+        """
+
+        required_rasters = [
+            ("Curvature", self.curvature_path),
+            ("Flow accumulation", self.mfd_fac_path),
+        ]
+
+        for raster, path in required_rasters:
+            if path is None:
+                raise ValueError(
+                    f"{raster} raster must be created before defining skeleton"
+                )
+
+        # get skeleton from curvature only
+        curvature, curvature_profile, _ = t.read_raster(self.curvature_path)
+        finite_curvature = curvature[np.isfinite(curvature)]
+        curvature_mean = np.nanmean(finite_curvature)
+        curvature_std = np.nanstd(finite_curvature)
+        print("Curvature mean: ", curvature_mean)
+        print("Curvature standard deviation: ", curvature_std)
+        print(f"Curvature Projection: {str(curvature_profile['crs'])}")
+        thresholdCurvatureQQxx = 1.5
+        curvature_threshold = curvature_mean + thresholdCurvatureQQxx * curvature_std
+        curvature_skeleton = t.get_skeleton(curvature, curvature_threshold)
+
+        # get skeleton from flow only
+        mfd_fac, _, _ = t.read_raster(self.mfd_fac_path)
+        mfd_fac[np.isnan(curvature)] = np.nan
+        mfd_fac_mean = np.nanmean(mfd_fac)
+        print("Mean upstream flow: ", mfd_fac_mean)
+        fac_skeleton = t.get_skeleton(mfd_fac, fac_threshold)
+
+        # get skeleton from flow and curvature
+        combined_skeleton = t.get_skeleton(
+            curvature, curvature_threshold, mfd_fac, fac_threshold
+        )
+
+        skeleton_profile = curvature_profile.copy()
+        skeleton_profile.update(dtype="int16", nodata=-32768)
+
+        if write_flow_skeleton:
+            # get file path for flow skeleton
+            self.flow_skeleton_path = t.get_file_path(
+                custom_path=None,
+                project_dir=self.project_dir,
+                dem_name=self.dem_path.stem,
+                suffix="flow_skeleton",
+            )
+            t.write_raster(
+                raster=fac_skeleton,
+                profile=skeleton_profile,
+                file_path=self.flow_skeleton_path,
+            )
+            print(f"Flow skeleton written to {str(self.flow_skeleton_path)}")
+
+        if write_curvature_skeleton:
+            # get file path for curvature skeleton
+            self.curvature_skeleton_path = t.get_file_path(
+                custom_path=None,
+                project_dir=self.project_dir,
+                dem_name=self.dem_path.stem,
+                suffix="curvature_skeleton",
+            )
+            t.write_raster(
+                raster=curvature_skeleton,
+                profile=skeleton_profile,
+                file_path=self.curvature_skeleton_path,
+            )
+            print(f"Curvature skeleton written to {str(self.curvature_skeleton_path)}")
+
+        # write combined skeleton
+        self.combined_skeleton_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="combined_skeleton",
+        )
+        t.write_raster(
+            raster=combined_skeleton,
+            profile=skeleton_profile,
+            file_path=self.combined_skeleton_path,
+        )
+        print(f"Combined skeleton written to {str(self.combined_skeleton_path)}")

@@ -497,3 +497,41 @@ def compute_dem_curvature(
     print(" standard deviation: ", curvatureDemStdDevn)
     curvatureDemArray[np.isnan(filteredDemArray)] = np.nan
     return curvatureDemArray
+
+
+def get_skeleton(
+    inputArray1: np.ndarray,
+    threshold1: float,
+    inputArray2: np.ndarray = None,
+    threshold2: float = None,
+) -> np.ndarray:
+    """
+    Creates a channel skeleton by thresholding grid measures such as flow or curvature.
+    Can operate on single or dual thresholds depending on input.
+
+    Parameters
+    ----------
+    inputArray1 : `np.ndarray`
+        First array of input values.
+    threshold1 : float
+        Threshold value for the first input array.
+    inputArray2 : `np.ndarray`, optional
+        Second array of input values. If provided, dual thresholding will be applied.
+    threshold2 : `float`, optional
+        Threshold value for the second input array, required if inputArray2 is provided.
+
+    Returns
+    -------
+    skeletonArray : `np.ndarray`
+        Binary array (dtype: int) of skeleton values.
+    """
+
+    mask1 = inputArray1 > threshold1
+
+    if inputArray2 is not None and threshold2 is not None:
+        mask2 = inputArray2 > threshold2
+        skeletonArray = (mask1 & mask2).astype(int)
+    else:
+        skeletonArray = mask1.astype(int)
+
+    return skeletonArray
