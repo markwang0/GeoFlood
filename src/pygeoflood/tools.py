@@ -1,11 +1,14 @@
 import numpy as np
 import os
+import psutil
 import time
-from pathlib import Path
 import rasterio as rio
+import skfmm
 import warnings
 
 from functools import wraps
+from numba import jit, prange
+from pathlib import Path
 from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
 from whitebox.whitebox_tools import WhiteboxTools
@@ -39,11 +42,16 @@ def path_property(name: str) -> property:
 
     @prop.setter
     def prop(self, value: str | os.PathLike):
-        # always convert to Path object
-        if isinstance(value, (str, os.PathLike)):
-            setattr(self, storage_name, Path(value))
+        # convert to Path object unless None
+        if value is None:
+            setattr(self, storage_name, value)
         else:
-            raise TypeError(f"{name} must be a string or os.PathLike object")
+            if isinstance(value, (str, os.PathLike)):
+                setattr(self, storage_name, Path(value))
+            else:
+                raise TypeError(
+                    f"{name} must be a string or os.PathLike object"
+                )
 
     return prop
 
@@ -82,6 +90,23 @@ def time_it(func: callable) -> callable:
         return result
 
     return wrapper
+
+
+def check_attributes(
+    attr_list: list[tuple[str, str | os.PathLike]], method
+) -> None:
+    """
+    Check if required attributes are present.
+
+    Parameters
+    ----------
+    attr_list : `list`
+        List of (dataset name, path) tuples.
+    """
+
+    for name, path in attr_list:
+        if path is None:
+            raise ValueError(f"{name} must be created before running {method}")
 
 
 def read_raster(
@@ -235,7 +260,7 @@ def simple_gaussian_smoothing(
     gaussianFilter = np.exp(
         -(xv**2 + yv**2) / (2 * diffusionSigmaSquared)
     )  # 2D Gaussian
-    gaussianFilter = gaussianFilter / np.sum(gaussianFilter[:])  # Normalize
+    gaussianFilter = gaussianFilter / np.sum(gaussianFilter)  # Normalize
     print(inputDemArray[0, 0:halfKernelWidth])
     xL = np.nanmean(inputDemArray[:, 0:halfKernelWidth], axis=1)
     print(f"xL: {xL}")
@@ -255,7 +280,7 @@ def simple_gaussian_smoothing(
     # The 'valid' option forces the 2d convolution to clip 2 pixels off
     # the edges NaNs spread from one pixel to a 5x5 set centered on
     # the NaN
-    fillvalue = np.nanmean(inputDemArray[:])
+    fillvalue = np.nanmean(inputDemArray)
     smoothedDemArray = convolve2d(eI, gaussianFilter, "valid")
     del inputDemArray, eI
     return smoothedDemArray
@@ -321,6 +346,7 @@ def anisodiff(
         S = gS * deltaS
         # subtract a copy that has been shifted 'North/West' by one
         # pixel. don't ask questions. just do it. trust me.
+        # **above comments from original GeoNet code**
         NS[:] = S
         EW[:] = E
         NS[1:, :] -= S[:-1, :]
@@ -376,7 +402,9 @@ def lambda_nonlinear_filter(
 
     print("Computing lambda = q-q-based nonlinear filtering threshold")
     slopeMagnitudeDemArray = slopeMagnitudeDemArray.flatten()
-    slopeMagnitudeDemArray = slopeMagnitudeDemArray[~np.isnan(slopeMagnitudeDemArray)]
+    slopeMagnitudeDemArray = slopeMagnitudeDemArray[
+        ~np.isnan(slopeMagnitudeDemArray)
+    ]
     print("DEM smoothing Quantile:", smoothing_quantile)
     edgeThresholdValue = (
         mquantiles(
@@ -428,8 +456,8 @@ def compute_dem_slope(
         " angle max:",
         np.arctan(np.percentile(slopeMagnitudeDemArrayQ, 99.9)) * 180 / np.pi,
     )
-    print(" mean slope:", np.nanmean(slopeDemArray[:]))
-    print(" stdev slope:", np.nanstd(slopeDemArray[:]))
+    print(" mean slope:", np.nanmean(slopeDemArray))
+    print(" stdev slope:", np.nanstd(slopeDemArray))
     slopeDemArray[np.isnan(filteredDemArray)] = np.nan
     return slopeDemArray
 
@@ -486,9 +514,9 @@ def compute_dem_curvature(
     del tmpy, tmpx
     # Computation of statistics of curvature
     print(" curvature statistics")
-    tt = curvatureDemArray[~np.isnan(curvatureDemArray[:])]
+    tt = curvatureDemArray[~np.isnan(curvatureDemArray)]
     print(" non-nan curvature cell number:", tt.shape[0])
-    finiteCurvatureDemList = curvatureDemArray[np.isfinite(curvatureDemArray[:])]
+    finiteCurvatureDemList = curvatureDemArray[np.isfinite(curvatureDemArray)]
     print(" non-nan finite curvature cell number:", end=" ")
     finiteCurvatureDemList.shape[0]
     curvatureDemMean = np.nanmean(finiteCurvatureDemList)
@@ -535,3 +563,103 @@ def get_skeleton(
         skeletonArray = mask1.astype(int)
 
     return skeletonArray
+
+
+@jit(nopython=True, parallel=True)
+def get_fmm_points(
+    basins,
+    outlets,
+    basin_elements,
+    area_threshold,
+):
+    fmmX = []
+    fmmY = []
+    basins_ravel = basins.ravel()
+    n_pixels = basins.size
+    for label in prange(outlets.shape[1]):
+        numelements = np.sum(basins_ravel == (label + 1))
+        percentBasinArea = numelements * 100.00001 / n_pixels
+        if (percentBasinArea > area_threshold) and (
+            numelements > basin_elements
+        ):
+            fmmX.append(outlets[1, label])
+            fmmY.append(outlets[0, label])
+
+    return np.array([fmmY, fmmX])
+
+
+def get_ram_usage() -> str:
+    """
+    Get the current system RAM usage and return it in a human-readable format.
+
+    Returns:
+    --------
+    str
+        A string representing the current RAM usage in GB with 2 decimal places.
+    """
+    # Fetch RAM usage information
+    mem = psutil.virtual_memory()
+    # Convert bytes to GB for more human-friendly reading
+    avail_memory_gb = mem.available / (1024**3)
+    total_memory_gb = mem.total / (1024**3)
+    total_less_avail = total_memory_gb - avail_memory_gb
+
+    return f"RAM usage: {total_less_avail:.2f}/{total_memory_gb:.0f} GB ({mem.percent}%)"
+
+
+def fast_marching(
+    fmm_start_points,
+    basins,
+    mfd_fac,
+    cost_function,
+):
+    # Fast marching
+    print("Performing fast marching")
+    # Do fast marching for each sub basin
+    geodesic_distance = np.zeros_like(basins)
+    geodesic_distance[geodesic_distance == 0] = np.inf
+    fmm_total_iter = len(fmm_start_points[0])
+    for i in range(fmm_total_iter):
+        basinIndexList = basins[fmm_start_points[0, i], fmm_start_points[1, i]]
+        # print("start point :", fmm_start_points[:, i])
+        maskedBasin = np.zeros_like(basins)
+        maskedBasin[basins == basinIndexList] = 1
+        maskedBasinFAC = np.zeros_like(basins)
+        maskedBasinFAC[basins == basinIndexList] = mfd_fac[
+            basins == basinIndexList
+        ]
+
+        phi = np.zeros_like(cost_function)
+        speed = np.zeros_like(cost_function)
+        phi[maskedBasinFAC != 0] = 1
+        speed[maskedBasinFAC != 0] = cost_function[maskedBasinFAC != 0]
+        phi[fmm_start_points[0, i], fmm_start_points[1, i]] = -1
+        del maskedBasinFAC
+        # print RAM usage per iteration
+        print(f"FMM {i+1}/{fmm_total_iter}: {get_ram_usage()}")
+        try:
+            travel_time = skfmm.travel_time(phi, speed, dx=0.01)
+        except IOError as e:
+            print("Error in calculating skfmm travel time")
+            print("Error in catchment: ", basinIndexList)
+            print("I/O error({0}): {1}".format(e.errno, e.strerror))
+            # setting travel time to empty array
+            travel_time = np.nan * np.zeros_like(cost_function)
+            # if defaults.doPlot == 1:
+            #    raster_point_plot(speed, fmm_start_points[:,i],
+            #                      'speed basin Index'+str(basinIndexList))
+            # plt.contour(speed,cmap=cm.coolwarm)
+            #    raster_point_plot(phi, fmm_start_points[:,i],
+            #                      'phi basin Index'+str(basinIndexList))
+        except ValueError:
+            print("Error in calculating skfmm travel time")
+            print("Error in catchment: ", basinIndexList)
+            print("That was not a valid number")
+        geodesic_distance[maskedBasin == 1] = travel_time[maskedBasin == 1]
+    geodesic_distance[maskedBasin == 1] = travel_time[maskedBasin == 1]
+    geodesic_distance[geodesic_distance == np.inf] = np.nan
+    # Plot the geodesic array
+    # if defaults.doPlot == 1:
+    #    geodesic_contour_plot(geodesic_distance,
+    #                          'Geodesic distance array (travel time)')
+    return geodesic_distance

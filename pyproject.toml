@@ -33,6 +33,7 @@ dependencies = [
     "pandas",
     "proj",
     "rasterio",
+    "scikit-fmm",
     "scipy",
     "six",
     "statsmodels",

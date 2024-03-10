@@ -1,4 +1,5 @@
 import numpy as np
+import sys
 
 from . import tools as t
 from os import PathLike
@@ -6,44 +7,13 @@ from pathlib import Path
 
 
 class PyGeoFlood(object):
-    def __init__(
-        self,
-        dem_path,
-        project_dir=None,
-    ):
-        """
-        Create a new pygeoflood model instance.
 
-        Parameters
-        ---------
-        dem_path : `str`, `os.PathLike`
-            Path to DEM in GeoTIFF format.
-        project_dir : `str`, `os.PathLike`, optional
-            Path to project directory. Default is the directory containing the
-            DEM. All outputs will be saved to this directory.
-        """
-
-        # automatically becomes a pathlib.Path object if not aleady
-        self.dem_path = dem_path
-        # if no project_dir is provided, use dir containing DEM
-        if project_dir is not None:
-            self.project_dir = project_dir
-        else:
-            self.project_dir = dem_path.parent
-
-    # String representation of class
-    def __repr__(self):
-        attrs = "\n    ".join(
-            (f'{k[1:]}="{v}",' if isinstance(v, (str, Path)) else f"{k[1:]}={v!r},")
-            for k, v in self.__dict__.items()
-            if v is not None
-        )
-        return f"{self.__class__.__name__}(\n    {attrs}\n)"
-
-    # create properties for class with getters and setters
-    # setters ensure each path property is a pathlib.Path object
+    # make these attributes properties with getters and setters
+    # t.path_property() ensures attribute is a pathlib.Path object
+    # dem_path and project_dir are not set to None initially
     dem_path = t.path_property("dem_path")
     project_dir = t.path_property("project_dir")
+    # below are set to None initially
     filtered_dem_path = t.path_property("filtered_dem_path")
     slope_path = t.path_property("slope_path")
     curvature_path = t.path_property("curvature_path")
@@ -55,6 +25,74 @@ class PyGeoFlood(object):
     flow_skeleton_path = t.path_property("flow_skeleton_path")
     curvature_skeleton_path = t.path_property("curvature_skeleton_path")
     combined_skeleton_path = t.path_property("combined_skeleton_path")
+    cost_function_path = t.path_property("cost_function_path")
+    geodesic_distance_path = t.path_property("geodesic_distance_path")
+
+    def __init__(
+        self,
+        dem_path,
+        project_dir=None,
+        filtered_dem_path=None,
+        slope_path=None,
+        curvature_path=None,
+        filled_path=None,
+        mfd_fac_path=None,
+        d8_fdr_path=None,
+        basins_path=None,
+        outlets_path=None,
+        flow_skeleton_path=None,
+        curvature_skeleton_path=None,
+        combined_skeleton_path=None,
+        cost_function_path=None,
+        geodesic_distance_path=None,
+    ):
+        """
+        Create a new pygeoflood model instance.
+
+        Parameters
+        ---------
+        dem_path : `str`, `os.PathLike`
+            Path to DEM in GeoTIFF format.
+        project_dir : `str`, `os.PathLike`, optional
+            Path to project directory. Default is the directory containing the
+            DEM. All outputs will be saved to this directory.
+        **kwargs : `dict`, optional
+        """
+
+        # automatically becomes a pathlib.Path object if not aleady
+        self.dem_path = dem_path
+        # if no project_dir is provided, use dir containing DEM
+        if project_dir is not None:
+            self.project_dir = project_dir
+        else:
+            self.project_dir = dem_path.parent
+        self.filtered_dem_path = filtered_dem_path
+        self.slope_path = slope_path
+        self.curvature_path = curvature_path
+        self.filled_path = filled_path
+        self.mfd_fac_path = mfd_fac_path
+        self.d8_fdr_path = d8_fdr_path
+        self.basins_path = basins_path
+        self.outlets_path = outlets_path
+        self.flow_skeleton_path = flow_skeleton_path
+        self.curvature_skeleton_path = curvature_skeleton_path
+        self.combined_skeleton_path = combined_skeleton_path
+        self.cost_function_path = cost_function_path
+        self.geodesic_distance_path = geodesic_distance_path
+
+    # string representation of class
+    # output can be used to recreate instance
+    def __repr__(self):
+        attrs = "\n    ".join(
+            (
+                f'{k[1:]}="{v}",'
+                if isinstance(v, (str, Path))
+                else f"{k[1:]}={v!r},"
+            )
+            for k, v in self.__dict__.items()
+            if v is not None
+        )
+        return f"{self.__class__.__name__}(\n    {attrs}\n)"
 
     @t.time_it
     def nonlinear_filter(
@@ -103,7 +141,7 @@ class PyGeoFlood(object):
             dem, pixel_scale, smoothing_quantile
         )
 
-        filteredDemArray = t.anisodiff(
+        filtered_dem = t.anisodiff(
             img=dem,
             niter=n_iter,
             kappa=edgeThresholdValue,
@@ -122,7 +160,7 @@ class PyGeoFlood(object):
 
         # write filtered DEM
         t.write_raster(
-            raster=filteredDemArray,
+            raster=filtered_dem,
             profile=dem_profile,
             file_path=self.filtered_dem_path,
         )
@@ -142,17 +180,14 @@ class PyGeoFlood(object):
             Custom path to save slope raster. If not provided, slope raster
             will be saved in project directory.
         """
-        if self.filtered_dem_path is None:
-            raise ValueError(
-                "Filtered DEM must be created before calculating slope and curvature"
-            )
+
+        t.check_attributes([("Filtered DEM", self.filtered_dem_path)], "slope")
 
         # read filtered DEM
         filtered_dem, filtered_dem_profile, pixel_scale = t.read_raster(
             self.filtered_dem_path
         )
 
-        print("Computing slope")
         slope_array = t.compute_dem_slope(filtered_dem, pixel_scale)
 
         # get file path for slope array
@@ -191,17 +226,16 @@ class PyGeoFlood(object):
             - "laplacian": TODO: detailed description
             Default is "geometric".
         """
-        if self.filtered_dem_path is None:
-            raise ValueError(
-                "Filtered DEM must be created before calculating curvature"
-            )
+
+        t.check_attributes(
+            [("Filtered DEM", self.filtered_dem_path)], "curvature"
+        )
 
         # read filtered DEM
         filtered_dem, filtered_dem_profile, pixel_scale = t.read_raster(
             self.filtered_dem_path
         )
 
-        print("Computing curvature")
         curvature_array = t.compute_dem_curvature(
             filtered_dem,
             pixel_scale,
@@ -243,10 +277,10 @@ class PyGeoFlood(object):
             Additional arguments to pass to the WhiteboxTools `fill_depressions`
             function. See WhiteboxTools documentation for details.
         """
-        if self.filtered_dem_path is None:
-            raise ValueError("Filtered DEM must be created before filling depressions")
 
-        print("Filling depressions on the filtered DEM")
+        t.check_attributes(
+            [("Filtered DEM", self.filtered_dem_path)], "fill_depressions"
+        )
 
         # get file path for filled DEM
         self.filled_path = t.get_file_path(
@@ -289,12 +323,10 @@ class PyGeoFlood(object):
             Additional arguments to pass to the WhiteboxTools `quinn_flow_accumulation`
             function. See WhiteboxTools documentation for details.
         """
-        if self.filled_path is None:
-            raise ValueError(
-                "Filled DEM must be created before calculating MFD flow accumulation"
-            )
 
-        print("Calculating MFD flow accumulation")
+        t.check_attributes(
+            [("Filled DEM", self.filled_path)], "MFD flow accumulation"
+        )
 
         # get file path for MFD flow accumulation
         self.mfd_fac_path = t.get_file_path(
@@ -316,7 +348,9 @@ class PyGeoFlood(object):
             **wbt_args,
         )
 
-        print(f"MFD flow accumulation raster written to {str(self.mfd_fac_path)}")
+        print(
+            f"MFD flow accumulation raster written to {str(self.mfd_fac_path)}"
+        )
 
     @t.time_it
     def d8_flow_direction(
@@ -337,12 +371,10 @@ class PyGeoFlood(object):
             Additional arguments to pass to the WhiteboxTools `d8_pointer`
             function. See WhiteboxTools documentation for details.
         """
-        if self.filled_path is None:
-            raise ValueError(
-                "Filled DEM must be created before calculating D8 flow direction"
-            )
 
-        print("Calculating D8 flow direction")
+        t.check_attributes(
+            [("Filled DEM", self.filled_path)], "D8 flow direction"
+        )
 
         # get file path for D8 flow direction
         self.d8_fdr_path = t.get_file_path(
@@ -365,7 +397,9 @@ class PyGeoFlood(object):
 
         # for some reason WBT assigns D8 values to nodata cells
         # add back nodata cells from filtered DEM
-        filtered_dem, filtered_profile, _ = t.read_raster(self.filtered_dem_path)
+        filtered_dem, filtered_profile, _ = t.read_raster(
+            self.filtered_dem_path
+        )
         filtered_dem[filtered_dem == filtered_profile["nodata"]] = np.nan
         # read D8 flow direction raster
         d8_fdr, d8_profile, _ = t.read_raster(self.d8_fdr_path)
@@ -395,12 +429,10 @@ class PyGeoFlood(object):
             Path to save outlets raster. If not provided, outlets raster will be
             saved in project directory.
         """
-        if self.d8_fdr_path is None:
-            raise ValueError(
-                "D8 flow direction raster must be created before creating outlets raster"
-            )
 
-        print("Creating outlets raster")
+        t.check_attributes(
+            [("D8 flow direction raster", self.d8_fdr_path)], "outlets"
+        )
 
         # read D8 flow direction raster, outlets designated by WBT as 0
         outlets, profile, _ = t.read_raster(self.d8_fdr_path)
@@ -448,12 +480,10 @@ class PyGeoFlood(object):
             Additional arguments to pass to the WhiteboxTools `basins` function.
             See WhiteboxTools documentation for details.
         """
-        if self.d8_fdr_path is None:
-            raise ValueError(
-                "D8 flow direction raster must be created before delineating basins"
-            )
 
-        print("Delineating basins")
+        t.check_attributes(
+            [("D8 flow direction raster", self.d8_fdr_path)], "basins"
+        )
 
         # get file path for basins
         self.basins_path = t.get_file_path(
@@ -500,16 +530,12 @@ class PyGeoFlood(object):
             Whether to write curvature skeleton to file. Default is False.
         """
 
-        required_rasters = [
-            ("Curvature", self.curvature_path),
-            ("Flow accumulation", self.mfd_fac_path),
+        check_rasters = [
+            ("Curvature raster", self.curvature_path),
+            ("Flow accumulation raster", self.mfd_fac_path),
         ]
 
-        for raster, path in required_rasters:
-            if path is None:
-                raise ValueError(
-                    f"{raster} raster must be created before defining skeleton"
-                )
+        t.check_attributes(check_rasters, "skeleton_definition")
 
         # get skeleton from curvature only
         curvature, curvature_profile, _ = t.read_raster(self.curvature_path)
@@ -520,7 +546,9 @@ class PyGeoFlood(object):
         print("Curvature standard deviation: ", curvature_std)
         print(f"Curvature Projection: {str(curvature_profile['crs'])}")
         thresholdCurvatureQQxx = 1.5
-        curvature_threshold = curvature_mean + thresholdCurvatureQQxx * curvature_std
+        curvature_threshold = (
+            curvature_mean + thresholdCurvatureQQxx * curvature_std
+        )
         curvature_skeleton = t.get_skeleton(curvature, curvature_threshold)
 
         # get skeleton from flow only
@@ -566,7 +594,9 @@ class PyGeoFlood(object):
                 profile=skeleton_profile,
                 file_path=self.curvature_skeleton_path,
             )
-            print(f"Curvature skeleton written to {str(self.curvature_skeleton_path)}")
+            print(
+                f"Curvature skeleton written to {str(self.curvature_skeleton_path)}"
+            )
 
         # write combined skeleton
         self.combined_skeleton_path = t.get_file_path(
@@ -580,4 +610,124 @@ class PyGeoFlood(object):
             profile=skeleton_profile,
             file_path=self.combined_skeleton_path,
         )
-        print(f"Combined skeleton written to {str(self.combined_skeleton_path)}")
+        print(
+            f"Combined skeleton written to {str(self.combined_skeleton_path)}"
+        )
+
+    @t.time_it
+    def geodesic_distance(
+        self,
+        custom_path: str | PathLike = None,
+        write_cost_function: bool = False,
+        basin_elements: int = 2,
+        area_threshold: float = 0.1,
+        normalize_curvature: bool = True,
+        local_cost_min: float | None = None,
+    ):
+        """
+        Calculate geodesic distance. This is a wrapper for the WhiteboxTools
+        `geodesic_distance` function.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Path to save geodesic distance raster. If not provided, geodesic
+            distance raster will be saved in project directory.
+        write_cost_function : `bool`, optional
+            Whether to write cost function raster to file. Default is False.
+        basin_elements : `int`, optional
+            Number of basin elements. Default is 2.
+        area_threshold : `float`, optional
+            Area threshold for fast marching method. Default is 0.1.
+        normalize_curvature : `bool`, optional
+            Whether to normalize curvature. Default is True.
+        local_cost_min : `float`, optional
+            Minimum local cost. Default is None.
+        """
+
+        check_rasters = [
+            ("Curvature raster", self.curvature_path),
+            ("Flow accumulation raster", self.mfd_fac_path),
+            ("Outlets raster", self.outlets_path),
+            ("Basins raster", self.basins_path),
+            ("Combined skeleton raster", self.combined_skeleton_path),
+        ]
+
+        t.check_attributes(check_rasters, "geodesic_distance")
+
+        outlets, o_profile, _ = t.read_raster(self.outlets_path)
+        outlets = outlets.astype(np.float32)
+        outlets[(outlets == 0) | (outlets == o_profile["nodata"])] = np.nan
+        outlets = np.transpose(np.argwhere(~np.isnan(outlets)))
+        basins, _, _ = t.read_raster(self.basins_path)
+        curvature, _, _ = t.read_raster(self.curvature_path)
+        mfd_fac, _, _ = t.read_raster(self.mfd_fac_path)
+        filtered_dem, filt_profile, _ = t.read_raster(self.filtered_dem_path)
+        mfd_fac[np.isnan(filtered_dem)] = np.nan
+        del filtered_dem
+        combined_skeleton, _, _ = t.read_raster(self.combined_skeleton_path)
+
+        # get start points for Fast Marching Method
+        fmm_start_points = t.get_fmm_points(
+            basins, outlets, basin_elements, area_threshold
+        )
+
+        # Computing the local cost function
+        # curvature = t.Curvature_Preparation(curvature, normalize_curvature)
+        if normalize_curvature:
+            c_min = np.nanmin(curvature)
+            c_max = np.nanmax(curvature)
+            curvature = (curvature - c_min) / (c_max - c_min)
+        curvature[np.isnan(curvature)] = 0
+
+        # calculate cost function
+        # Calculate the local reciprocal cost (weight, or propagation speed
+        # in the eikonal equation sense).  If the cost function isn't defined,
+        # default to old cost function.
+        flowMean = np.nanmean(mfd_fac)
+        cost_function = (
+            mfd_fac + flowMean * combined_skeleton + flowMean * curvature
+        )
+        if local_cost_min is not None:
+            cost_function[cost_function < local_cost_min] = 1.0
+        # print("1/cost min: ", np.nanmin(cost_function))
+        # print("1/cost max: ", np.nanmax(cost_function))
+        del curvature, combined_skeleton
+
+        # Compute the geodesic distance using Fast Marching Method
+        geodesic_distance = t.fast_marching(
+            fmm_start_points, basins, mfd_fac, cost_function
+        )
+
+        if write_cost_function:
+            self.cost_function_path = t.get_file_path(
+                custom_path=None,
+                project_dir=self.project_dir,
+                dem_name=self.dem_path.stem,
+                suffix="cost_function",
+            )
+            t.write_raster(
+                raster=cost_function,
+                profile=filt_profile,
+                file_path=self.cost_function_path,
+            )
+            print(f"Cost function written to {str(self.cost_function_path)}")
+
+        # get file path for geodesic distance
+        self.geodesic_distance_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="geodesic_distance",
+        )
+
+        # write geodesic distance
+        t.write_raster(
+            raster=geodesic_distance,
+            profile=filt_profile,
+            file_path=self.geodesic_distance_path,
+        )
+
+        print(
+            f"Geodesic distance raster written to {str(self.geodesic_distance_path)}"
+        )
