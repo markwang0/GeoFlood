@@ -1,3 +1,4 @@
+import geopandas as gpd
 import numpy as np
 import os
 import psutil
@@ -9,8 +10,10 @@ import warnings
 from functools import wraps
 from numba import jit, prange
 from pathlib import Path
+from scipy import ndimage
 from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
+from shapely.geometry import Point
 from whitebox.whitebox_tools import WhiteboxTools
 
 warnings.filterwarnings(
@@ -164,11 +167,69 @@ def write_raster(
         ds.write(raster, 1)
 
 
+def write_vector(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    profile: rio.profiles.Profile | dict,
+    dataset_name: str,
+    file_path: str | os.PathLike,
+):
+    """
+    Write a vector file.
+
+    Parameters
+    ----------
+    rows : `np.ndarray`
+        Array of row values.
+    cols : `np.ndarray`
+        Array of column values.
+    profile : `rio.profiles.Profile` | `dict`
+        Raster profile.
+    dataset_name : `str`
+        Name of dataset.
+    file_path : `str` | `os.PathLike`
+        Path to write file.
+    """
+
+    transform = profile["transform"]
+    crs = profile["crs"]
+
+    # Use rasterio.transform.xy to project xx, yy points
+    rows, cols = np.array(rows), np.array(cols)
+    xy_proj = [
+        rio.transform.xy(transform, rows[i], cols[i], offset="center")
+        for i in range(len(rows))
+    ]
+
+    # Unpack the projected coordinates to easting and northing for UTM
+    easting, northing = zip(*xy_proj)
+
+    # Create Point geometries
+    geometry = [Point(x, y) for x, y in zip(easting, northing)]
+
+    # Create a GeoDataFrame with Northing and Easting fields
+    gdf = gpd.GeoDataFrame(
+        {
+            "Type": [dataset_name] * len(geometry),
+            "Northing": northing,
+            "Easting": easting,
+        },
+        geometry=geometry,
+    )
+
+    # Set the CRS for the GeoDataFrame from rasterio CRS
+    gdf.crs = crs
+
+    # Write the GeoDataFrame to a shapefile
+    gdf.to_file(file_path)
+
+
 def get_file_path(
     custom_path: str | os.PathLike,
     project_dir: str | os.PathLike,
     dem_name: str,
     suffix: str,
+    extension: str = "tif",
 ) -> str | os.PathLike:
     """
     Get file path.
@@ -184,6 +245,8 @@ def get_file_path(
     suffix : `str`
         Suffix to append to DEM filename. Only used if `write_path` is not
         provided.
+    extension : `str`, optional
+        File extension. Default is ".tif".
 
     Returns
     -------
@@ -196,7 +259,7 @@ def get_file_path(
         # append to DEM filename, save in project directory
         file_path = Path(
             project_dir,
-            f"{dem_name}_{suffix}.tif",
+            f"{dem_name}_{suffix}.{extension}",
         )
 
     return file_path
@@ -663,3 +726,121 @@ def fast_marching(
     #    geodesic_contour_plot(geodesic_distance,
     #                          'Geodesic distance array (travel time)')
     return geodesic_distance
+
+
+def get_channel_heads(
+    combined_skeleton,
+    geodesic_distance,
+    channel_head_median_dist,
+    max_channel_heads,
+):
+    """
+    Through the histogram of sorted_label_counts
+    (skeletonNumElementsList minus the maximum value which
+    corresponds to the largest connected element of the skeleton) we get the
+    size of the smallest elements of the skeleton, which will likely
+    correspond to small isolated convergent areas. These elements will be
+    excluded from the search of end points.
+    """
+    # Locating end points
+    print("Locating skeleton end points")
+    structure = np.ones((3, 3))
+    labeled, num_labels = ndimage.label(combined_skeleton, structure=structure)
+    print("Counting the number of elements of each connected component")
+    lbls = np.arange(1, num_labels + 1)
+    label_counts = ndimage.labeled_comprehension(
+        input=combined_skeleton,
+        labels=labeled,
+        index=lbls,
+        func=np.count_nonzero,
+        out_dtype=int,
+        default=0,
+    )
+    sorted_label_counts = np.sort(label_counts)
+    num_bins = int(np.floor(np.sqrt(len(sorted_label_counts))))
+    histarray, bin_edges = np.histogram(sorted_label_counts[:-1], num_bins)
+    # if defaults.doPlot == 1:
+    #     raster_plot(labeled, "Skeleton Labeled Array elements Array")
+    # Create skeleton gridded array
+    labeled_set, label_indices = np.unique(labeled, return_inverse=True)
+    skeleton_gridded_array = np.array(
+        [label_counts[x - 1] for x in labeled_set]
+    )[label_indices].reshape(labeled.shape)
+    # if defaults.doPlot == 1:
+    #     raster_plot(
+    #         skeleton_gridded_array, "Skeleton Num elements Array"
+    #     )
+    # Elements smaller than count_threshold are not considered in the
+    # channel_heads detection
+    count_threshold = bin_edges[2]
+    print(f"Skeleton region size threshold: {str(count_threshold)}")
+    # Scan the array for finding the channel heads
+    print("Continuing to locate skeleton endpoints")
+    channel_heads = []
+    nrows, ncols = combined_skeleton.shape
+    channel_heads = jit_channel_heads(
+        labeled,
+        skeleton_gridded_array,
+        geodesic_distance,
+        nrows,
+        ncols,
+        count_threshold,
+        channel_head_median_dist,
+        max_channel_heads,
+    )
+    channel_heads = np.transpose(channel_heads)
+    ch_rows = channel_heads[0]
+    ch_cols = channel_heads[1]
+    return ch_rows, ch_cols
+
+
+@jit(nopython=True)
+def jit_channel_heads(
+    labeled,
+    skeleton_gridded_array,
+    geodesic_distance,
+    nrows,
+    ncols,
+    count_threshold,
+    channel_head_median_dist,
+    max_channel_heads,
+):
+    # pre-allocate array of channel heads
+    channel_heads = np.zeros((max_channel_heads, 2), dtype=np.int32)
+    ch_count = 0
+
+    for i in range(nrows):
+        for j in range(ncols):
+            if (
+                labeled[i, j] != 0
+                and skeleton_gridded_array[i, j] >= count_threshold
+            ):
+                my, py, mx, px = i - 1, nrows - i, j - 1, ncols - j
+                xMinus, xPlus = min(channel_head_median_dist, mx), min(
+                    channel_head_median_dist, px
+                )
+                yMinus, yPlus = min(channel_head_median_dist, my), min(
+                    channel_head_median_dist, py
+                )
+
+                search_geodesic_box = geodesic_distance[
+                    i - yMinus : i + yPlus + 1, j - xMinus : j + xPlus + 1
+                ]
+                search_skeleton_box = labeled[
+                    i - yMinus : i + yPlus + 1, j - xMinus : j + xPlus + 1
+                ]
+
+                v = search_skeleton_box == labeled[i, j]
+                v1 = v & (search_geodesic_box > geodesic_distance[i, j])
+
+                if not np.any(v1):
+                    channel_heads[ch_count] = [i, j]
+                    ch_count += 1
+                # Trim to the actual number of channel heads found
+                # warn if max_channel_heads was exceeded
+                if ch_count > max_channel_heads:
+                    print(
+                        f"Warning: max_channel_heads ({max_channel_heads}) exceeded. "
+                        "Consider increasing max_channel_heads"
+                    )
+    return channel_heads[:ch_count]

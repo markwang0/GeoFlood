@@ -27,6 +27,7 @@ class PyGeoFlood(object):
     combined_skeleton_path = t.path_property("combined_skeleton_path")
     cost_function_path = t.path_property("cost_function_path")
     geodesic_distance_path = t.path_property("geodesic_distance_path")
+    channel_heads_path = t.path_property("channel_heads_path")
 
     def __init__(
         self,
@@ -45,6 +46,7 @@ class PyGeoFlood(object):
         combined_skeleton_path=None,
         cost_function_path=None,
         geodesic_distance_path=None,
+        channel_heads_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -79,6 +81,7 @@ class PyGeoFlood(object):
         self.combined_skeleton_path = combined_skeleton_path
         self.cost_function_path = cost_function_path
         self.geodesic_distance_path = geodesic_distance_path
+        self.channel_heads_path = channel_heads_path
 
     # string representation of class
     # output can be used to recreate instance
@@ -730,4 +733,74 @@ class PyGeoFlood(object):
 
         print(
             f"Geodesic distance raster written to {str(self.geodesic_distance_path)}"
+        )
+
+    @t.time_it
+    def channel_heads(
+        self,
+        custom_path: str | PathLike = None,
+        channel_head_median_dist: int = 30,
+        vector_extension: str = "shp",
+        max_channel_heads: int = 10000,
+    ):
+        """
+        Define channel heads.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save channel heads shapefile. If not provided,
+            channel heads shapefile will be saved in project directory.
+        channel_head_median_dist : `int`, optional
+            Median hillslope of the input DEM, i.e. the distance between
+            each pixel and the first channelized downslope pixel. Default is 30.
+        vector_extension : `str`, optional
+            Extension for vector file. Default is "shp".
+        max_channel_heads : `int`, optional
+            Maximum number of channel heads to extract. Default is 10000.
+            (useful for pre-allocation of memory for large rasters)
+        """
+
+        check_rasters = [
+            ("Combined skeleton raster", self.combined_skeleton_path),
+            ("Geodesic distance raster", self.geodesic_distance_path),
+        ]
+
+        t.check_attributes(check_rasters, "channel_head_definition")
+
+        # read combined skeleton and geodesic distance rasters
+        combined_skeleton, _, _ = t.read_raster(self.combined_skeleton_path)
+
+        geodesic_distance, geo_profile, _ = t.read_raster(
+            self.geodesic_distance_path
+        )
+
+        # get channel heads
+        ch_rows, ch_cols = t.get_channel_heads(
+            combined_skeleton,
+            geodesic_distance,
+            channel_head_median_dist,
+            max_channel_heads,
+        )
+
+        # get file path for channel heads
+        self.channel_heads_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="channel_heads",
+            extension=vector_extension,
+        )
+
+        # write channel heads shapefile
+        t.write_vector(
+            rows=ch_rows,
+            cols=ch_cols,
+            profile=geo_profile,
+            dataset_name="channel_heads",
+            file_path=self.channel_heads_path,
+        )
+
+        print(
+            f"Channel heads shapefile written to {str(self.channel_heads_path)}"
         )
