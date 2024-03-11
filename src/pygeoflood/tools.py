@@ -729,11 +729,11 @@ def fast_marching(
 
 
 def get_channel_heads(
-    combined_skeleton,
-    geodesic_distance,
-    channel_head_median_dist,
-    max_channel_heads,
-):
+    combined_skeleton: np.ndarray,
+    geodesic_distance: np.ndarray,
+    channel_head_median_dist: int,
+    max_channel_heads: int,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """
     Through the histogram of sorted_label_counts
     (skeletonNumElementsList minus the maximum value which
@@ -805,6 +805,9 @@ def jit_channel_heads(
     channel_head_median_dist,
     max_channel_heads,
 ):
+    """
+    Numba JIT-compiled function for finding channel heads.
+    """
     # pre-allocate array of channel heads
     channel_heads = np.zeros((max_channel_heads, 2), dtype=np.int32)
     ch_count = 0
@@ -844,3 +847,22 @@ def jit_channel_heads(
                         "Consider increasing max_channel_heads"
                     )
     return channel_heads[:ch_count]
+
+
+def get_endpoints(in_shp: str | os.PathLike) -> gpd.GeoDataFrame:
+    # Read the shapefile into a GeoDataFrame
+    gdf = gpd.read_file(in_shp)
+
+    # Extract start and end points directly into the GeoDataFrame
+    gdf["START_X"] = gdf.geometry.apply(lambda geom: geom.coords[0][0])
+    gdf["START_Y"] = gdf.geometry.apply(lambda geom: geom.coords[0][1])
+    gdf["END_X"] = gdf.geometry.apply(lambda geom: geom.coords[-1][0])
+    gdf["END_Y"] = gdf.geometry.apply(lambda geom: geom.coords[-1][1])
+
+    # Create a RiverID column
+    gdf["RiverID"] = range(1, len(gdf) + 1)
+
+    # Select and order the columns for the output CSV
+    endpoints = gdf[["RiverID", "START_X", "START_Y", "END_X", "END_Y"]]
+
+    return endpoints

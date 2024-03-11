@@ -28,6 +28,8 @@ class PyGeoFlood(object):
     cost_function_path = t.path_property("cost_function_path")
     geodesic_distance_path = t.path_property("geodesic_distance_path")
     channel_heads_path = t.path_property("channel_heads_path")
+    flowline_path = t.path_property("flowline_path")
+    endpoints_path = t.path_property("endpoints_path")
 
     def __init__(
         self,
@@ -47,6 +49,8 @@ class PyGeoFlood(object):
         cost_function_path=None,
         geodesic_distance_path=None,
         channel_heads_path=None,
+        flowline_path=None,
+        endpoints_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -82,6 +86,8 @@ class PyGeoFlood(object):
         self.cost_function_path = cost_function_path
         self.geodesic_distance_path = geodesic_distance_path
         self.channel_heads_path = channel_heads_path
+        self.flowline_path = flowline_path
+        self.endpoints_path = endpoints_path
 
     # string representation of class
     # output can be used to recreate instance
@@ -804,3 +810,39 @@ class PyGeoFlood(object):
         print(
             f"Channel heads shapefile written to {str(self.channel_heads_path)}"
         )
+
+    @t.time_it
+    def endpoints(
+        self,
+        custom_path: str | PathLike = None,
+    ):
+        """
+        Save flowline endpoints in a csv file.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save endpoints csv. If not provided, endpoints
+            csv will be saved in project directory.
+        """
+
+        t.check_attributes(
+            [("Flowline vector file", self.flowline_path)],
+            "endpoints",
+        )
+
+        endpoints = t.get_endpoints(self.flowline_path)
+
+        # get file path for endpoints
+        self.endpoints_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="endpoints",
+            extension="csv",
+        )
+
+        # write endpoints csv
+        endpoints.to_csv(self.endpoints_path, index=False)
+
+        print(f"Endpoints csv written to {str(self.endpoints_path)}")
