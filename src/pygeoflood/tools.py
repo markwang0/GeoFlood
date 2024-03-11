@@ -1,6 +1,5 @@
 import geopandas as gpd
 import numpy as np
-import os
 import psutil
 import time
 import rasterio as rio
@@ -9,7 +8,9 @@ import warnings
 
 from functools import wraps
 from numba import jit, prange
+from os import PathLike
 from pathlib import Path
+from rasterio.features import rasterize
 from scipy import ndimage
 from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
@@ -40,16 +41,16 @@ def path_property(name: str) -> property:
     storage_name = f"_{name}"
 
     @property
-    def prop(self) -> str | os.PathLike:
+    def prop(self) -> str | PathLike:
         return getattr(self, storage_name)
 
     @prop.setter
-    def prop(self, value: str | os.PathLike):
+    def prop(self, value: str | PathLike):
         # convert to Path object unless None
         if value is None:
             setattr(self, storage_name, value)
         else:
-            if isinstance(value, (str, os.PathLike)):
+            if isinstance(value, (str, PathLike)):
                 setattr(self, storage_name, Path(value))
             else:
                 raise TypeError(
@@ -96,7 +97,7 @@ def time_it(func: callable) -> callable:
 
 
 def check_attributes(
-    attr_list: list[tuple[str, str | os.PathLike]], method
+    attr_list: list[tuple[str, str | PathLike]], method
 ) -> None:
     """
     Check if required attributes are present.
@@ -125,9 +126,9 @@ def read_raster(
 
     Returns
     -------
-    raster : `np.ndarray`
+    raster : `numpy.ndarray`
         Array of raster values.
-    profile : `rio.profiles.Profile` | `dict`
+    profile : `rasterio.profiles.Profile` | `dict`
         Raster profile.
     pixel_scale : `float` | `int`
         Pixel scale of raster.
@@ -145,17 +146,17 @@ def read_raster(
 def write_raster(
     raster: np.ndarray,
     profile: rio.profiles.Profile | dict,
-    file_path: str | os.PathLike,
+    file_path: str | PathLike,
     compression: str = "lzw",
-) -> str | os.PathLike:
+) -> str | PathLike:
     """
     Write a raster file.
 
     Parameters
     ----------
-    raster : `np.ndarray`
+    raster : `numpy.ndarray`
         Array of raster values.
-    profile : `rio.profiles.Profile` | `dict`
+    profile : `rasterio.profiles.Profile` | `dict`
         Raster profile.
     compression : `str`, optional
         Compression method. Default is "lzw".
@@ -167,23 +168,43 @@ def write_raster(
         ds.write(raster, 1)
 
 
+def read_vector(
+    file_path: str | PathLike,
+) -> gpd.GeoDataFrame:
+    """
+    Read a vector file.
+
+    Parameters
+    ----------
+    file_path : `str` | `os.PathLike`
+        Path to vector file.
+
+    Returns
+    -------
+    gdf : `geopandas.GeoDataFrame`
+        GeoDataFrame of vector file.
+    """
+    gdf = gpd.read_file(file_path)
+    return gdf
+
+
 def write_vector(
     rows: np.ndarray,
     cols: np.ndarray,
     profile: rio.profiles.Profile | dict,
     dataset_name: str,
-    file_path: str | os.PathLike,
+    file_path: str | PathLike,
 ):
     """
     Write a vector file.
 
     Parameters
     ----------
-    rows : `np.ndarray`
+    rows : `numpy.ndarray`
         Array of row values.
-    cols : `np.ndarray`
+    cols : `numpy.ndarray`
         Array of column values.
-    profile : `rio.profiles.Profile` | `dict`
+    profile : `rasterio.profiles.Profile` | `dict`
         Raster profile.
     dataset_name : `str`
         Name of dataset.
@@ -225,12 +246,12 @@ def write_vector(
 
 
 def get_file_path(
-    custom_path: str | os.PathLike,
-    project_dir: str | os.PathLike,
+    custom_path: str | PathLike,
+    project_dir: str | PathLike,
     dem_name: str,
     suffix: str,
     extension: str = "tif",
-) -> str | os.PathLike:
+) -> str | PathLike:
     """
     Get file path.
 
@@ -302,7 +323,7 @@ def simple_gaussian_smoothing(
 
     Parameters
     ----------
-    inputDemArray : `np.ndarray`
+    inputDemArray : `numpy.ndarray`
         Array of input DEM values.
     kernelWidth :
         Width of Gaussian kernel.
@@ -311,7 +332,7 @@ def simple_gaussian_smoothing(
 
     Returns
     -------
-    smoothedDemArray : `np.ndarray`
+    smoothedDemArray : `numpy.ndarray`
         Array of smoothed DEM values.
     """
     [Ny, Nx] = inputDemArray.shape
@@ -362,7 +383,7 @@ def anisodiff(
 
     Parameters
     ----------
-    img : `np.ndarray`
+    img : `numpy.ndarray`
         Array of input image values.
     niter : `int`
         Number of iterations.
@@ -377,7 +398,7 @@ def anisodiff(
 
     Returns
     -------
-    imgout : `np.ndarray`
+    imgout : `numpy.ndarray`
         Array of filtered image values.
     """
 
@@ -436,7 +457,7 @@ def lambda_nonlinear_filter(
 
     Parameters
     ----------
-    nanDemArray : `np.ndarray`
+    nanDemArray : `numpy.ndarray`
         Array of input DEM values.
     demPixelScale : `float`
         Pixel scale of DEM.
@@ -488,14 +509,14 @@ def compute_dem_slope(
 
     Parameters
     ----------
-    filteredDemArray : `np.ndarray`
+    filteredDemArray : `numpy.ndarray`
         Array of filtered DEM values.
     pixelDemScale : `float`
         Pixel scale of DEM.
 
     Returns
     -------
-    slopeDemArray : `np.ndarray`
+    slopeDemArray : `numpy.ndarray`
         Array of DEM slope values.
     """
 
@@ -535,7 +556,7 @@ def compute_dem_curvature(
 
     Parameters
     ----------
-    filteredDemArray : `np.ndarray`
+    filteredDemArray : `numpy.ndarray`
         Array of DEM values.
     pixelDemScale : `float`
         Pixel scale of DEM.
@@ -547,7 +568,7 @@ def compute_dem_curvature(
 
     Returns
     -------
-    curvatureDemArray : `np.ndarray`
+    curvatureDemArray : `numpy.ndarray`
         Array of DEM curvature values.
     """
 
@@ -602,18 +623,18 @@ def get_skeleton(
 
     Parameters
     ----------
-    inputArray1 : `np.ndarray`
+    inputArray1 : `numpy.ndarray`
         First array of input values.
     threshold1 : float
         Threshold value for the first input array.
-    inputArray2 : `np.ndarray`, optional
+    inputArray2 : `numpy.ndarray`, optional
         Second array of input values. If provided, dual thresholding will be applied.
     threshold2 : `float`, optional
         Threshold value for the second input array, required if inputArray2 is provided.
 
     Returns
     -------
-    skeletonArray : `np.ndarray`
+    skeletonArray : `numpy.ndarray`
         Binary array (dtype: int) of skeleton values.
     """
 
@@ -667,7 +688,7 @@ def get_ram_usage() -> str:
     total_memory_gb = mem.total / (1024**3)
     total_less_avail = total_memory_gb - avail_memory_gb
 
-    return f"RAM usage: {total_less_avail:.2f}/{total_memory_gb:.0f} GB ({mem.percent}%)"
+    return f"RAM usage: {total_less_avail:.2f}/{total_memory_gb:.2f} GB ({mem.percent}%)"
 
 
 def fast_marching(
@@ -849,7 +870,7 @@ def jit_channel_heads(
     return channel_heads[:ch_count]
 
 
-def get_endpoints(in_shp: str | os.PathLike) -> gpd.GeoDataFrame:
+def get_endpoints(in_shp: str | PathLike) -> gpd.GeoDataFrame:
     # Read the shapefile into a GeoDataFrame
     gdf = gpd.read_file(in_shp)
 
@@ -866,3 +887,151 @@ def get_endpoints(in_shp: str | os.PathLike) -> gpd.GeoDataFrame:
     endpoints = gdf[["RiverID", "START_X", "START_Y", "END_X", "END_Y"]]
 
     return endpoints
+
+
+@jit(nopython=True)
+def jit_binary_hand(
+    dem: np.ndarray,
+    flowline_raster: np.ndarray,
+    nodata: float,
+):
+    """
+    Numba JIT-compiled function for creating a binary HAND array.
+    """
+    # create a binary HAND array
+    d_x = np.asarray([-1, -1, 0, 1, 1, 1, 0, -1])
+    d_y = np.asarray([0, -1, -1, -1, 0, 1, 1, 1])
+    # g_x = np.asarray([1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0])
+    # g_y = np.asarray([0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0])
+    # r_x = np.full_like(dem, nodata)
+    # r_y = np.full_like(dem, nodata)
+
+    distanceArray = np.full_like(dem, nodata)
+    allocationArray = np.zeros_like(dem)
+    distanceArray = np.where(flowline_raster == 1, 0, np.inf)
+    allocationArray = np.where(flowline_raster == 1, dem, np.inf)
+
+    for row in range(distanceArray.shape[0]):
+        for col in range(distanceArray.shape[1]):
+            z = distanceArray[row, col]
+            if z != 0:
+                z_min = np.inf
+                which_cell = 0
+                for i in range(4):
+                    x = col + d_x[i]
+                    y = row + d_y[i]
+                    if (
+                        (x >= 0)
+                        and (x < distanceArray.shape[1])
+                        and (y >= 0)
+                        and (y < distanceArray.shape[0])
+                    ):
+                        z2 = distanceArray[y, x]
+                        if z2 != nodata:
+                            if i == 0:
+                                h = 1
+                                # h = 2*r_x[y,x]+1
+                            elif i == 1:
+                                h = 1.414
+                                # h = 2*(r_x[y,x]+r_y[y,x]+1)
+                            elif i == 2:
+                                h = 1
+                                # h = 2*r_y[y,x]+1
+                            elif i == 3:
+                                h = 1.414
+                                # h = 2*(r_x[y,x]+r_y[y,x]+1)
+                            z2 += h
+                            if z2 < z_min:
+                                z_min = z2
+                                which_cell = i
+                if z_min < z:
+                    distanceArray[row, col] = z_min
+                    x = col + d_x[which_cell]
+                    y = row + d_y[which_cell]
+                    # r_x[row, col] = r_x[y,x] + g_x[which_cell]
+                    # r_y[row, col] = r_y[y,x] + g_y[which_cell]
+                    allocationArray[row, col] = allocationArray[y, x]
+    for row in range(distanceArray.shape[0] - 1, -1, -1):
+        for col in range(distanceArray.shape[1] - 1, -1, -1):
+            z = distanceArray[row, col]
+            if z != 0:
+                z_min = np.inf
+                which_cell = 0
+                for i in range(4, 8):
+                    x = col + d_x[i]
+                    y = row + d_y[i]
+                    if (
+                        (x >= 0)
+                        and (x < distanceArray.shape[1])
+                        and (y >= 0)
+                        and (y < distanceArray.shape[0])
+                    ):
+                        z2 = distanceArray[y, x]
+                        if z2 != nodata:
+                            if i == 4:
+                                h = 1
+                                # h = 2*r_x[y,x]+1
+                            elif i == 5:
+                                h = 1.414
+                                # h = 2*(r_x[y,x]+r_y[y,x]+1)
+                            elif i == 6:
+                                h = 1
+                                # h = 2*r_y[y,x]+1
+                            elif i == 7:
+                                h = 1.414
+                                # h = 2*(r_x[y,x]+r_y[y,x]+1)
+                            z2 += h
+                            if z2 < z_min:
+                                z_min = z2
+                                which_cell = i
+                if z_min < z:
+                    distanceArray[row, col] = z_min
+                    x = col + d_x[which_cell]
+                    y = row + d_y[which_cell]
+                    # r_x[row, col] = r_x[y,x] + g_x[which_cell]
+                    # r_y[row, col] = r_y[y,x] + g_y[which_cell]
+                    allocationArray[row, col] = allocationArray[y, x]
+    allocationArray = np.where(dem == nodata, nodata, allocationArray)
+    allocationArray = np.where(
+        np.isinf(allocationArray), nodata, allocationArray
+    )
+    binary_hand = np.where(allocationArray < dem, 0, 1)
+    return binary_hand
+
+
+def get_binary_hand(
+    flowline: gpd.GeoDataFrame,
+    dem: np.ndarray,
+    dem_profile: rio.profiles.Profile | dict,
+) -> np.ndarray:
+    """
+    Create a binary HAND array.
+
+    Parameters
+    ----------
+    flowline : `geopandas.GeoDataFrame`
+        Flowline GeoDataFrame.
+    dem : `numpy.ndarray`
+        Array of DEM values.
+    dem_profile : `rasterio.profiles.Profile` | `dict`
+        Raster profile.
+
+    Returns
+    -------
+    binary_hand : `numpy.ndarray`
+        Binary HAND array.
+    """
+
+    # convert flowline to array with dem as reference
+    shapes = ((geom, 1) for geom in flowline.geometry)
+    flowline_raster = rasterize(
+        shapes=shapes,
+        fill=0,
+        out_shape=(dem_profile["height"], dem_profile["width"]),
+        transform=dem_profile["transform"],
+        dtype="int16",
+    )
+
+    binary_hand = jit_binary_hand(dem, flowline_raster, dem_profile["nodata"])
+
+    return binary_hand

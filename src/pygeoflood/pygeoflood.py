@@ -29,7 +29,9 @@ class PyGeoFlood(object):
     geodesic_distance_path = t.path_property("geodesic_distance_path")
     channel_heads_path = t.path_property("channel_heads_path")
     flowline_path = t.path_property("flowline_path")
+    catchment_path = t.path_property("catchment_path")
     endpoints_path = t.path_property("endpoints_path")
+    binary_hand_path = t.path_property("binary_hand_path")
 
     def __init__(
         self,
@@ -51,6 +53,8 @@ class PyGeoFlood(object):
         channel_heads_path=None,
         flowline_path=None,
         endpoints_path=None,
+        catchment_path=None,
+        binary_hand_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -88,6 +92,8 @@ class PyGeoFlood(object):
         self.channel_heads_path = channel_heads_path
         self.flowline_path = flowline_path
         self.endpoints_path = endpoints_path
+        self.catchment_path = catchment_path
+        self.binary_hand_path = binary_hand_path
 
     # string representation of class
     # output can be used to recreate instance
@@ -846,3 +852,54 @@ class PyGeoFlood(object):
         endpoints.to_csv(self.endpoints_path, index=False)
 
         print(f"Endpoints csv written to {str(self.endpoints_path)}")
+
+    @t.time_it
+    def binary_hand(
+        self,
+        custom_path: str | PathLike = None,
+    ):
+        """
+        Creates binary HAND raster with values of 1 given to pixels at a lower
+        elevation than the elevation associated with NHD MR Flowline pixels.
+        A value of zero is given to all other pixels in the image, i.e. pixels
+        at a higher elevation than the NHD MR Flowlines.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save binary HAND raster. If not provided, binary HAND
+            raster will be saved in project directory.
+        """
+
+        required_files = [
+            ("DEM", self.dem_path),
+            ("Flowline vector file", self.flowline_path),
+        ]
+
+        t.check_attributes(required_files, "endpoints")
+
+        flowline = t.read_vector(self.flowline_path)
+        dem, dem_profile, _ = t.read_raster(self.dem_path)
+        binary_hand = t.get_binary_hand(flowline, dem, dem_profile)
+        out_profile = dem_profile.copy()
+        out_profile.update(dtype="int16", nodata=-32768)
+        binary_hand[dem == dem_profile["nodata"]] = out_profile["nodata"]
+        binary_hand[np.isnan(dem)] = out_profile["nodata"]
+
+
+        # get file path for endpoints
+        self.binary_hand_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="binary_hand",
+        )
+
+        # write binary hand
+        t.write_raster(
+            raster=binary_hand,
+            profile=out_profile,
+            file_path=self.binary_hand_path,
+        )
+
+        print(f"Binary HAND raster written to {str(self.binary_hand_path)}")
