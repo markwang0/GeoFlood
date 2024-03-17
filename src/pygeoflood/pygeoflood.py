@@ -40,7 +40,7 @@ class PyGeoFlood(object):
     custom_flowline_raster_path = t.path_property("custom_flowline_raster_path")
     channel_network_path = t.path_property("channel_network_path")
     cost_function_channel_path = t.path_property("cost_function_channel_path")
-    streamcell_path = t.path_property("streamcell_path")
+    hand_path = t.path_property("hand_path")
 
     catchment_path = t.path_property("catchment_path")
 
@@ -69,7 +69,7 @@ class PyGeoFlood(object):
         custom_flowline_raster_path=None,
         channel_network_path=None,
         cost_function_channel_path=None,
-        streamcell_path=None,
+        hand_path=None,
         catchment_path=None,
     ):
         """
@@ -113,7 +113,7 @@ class PyGeoFlood(object):
         self.custom_flowline_raster_path = custom_flowline_raster_path
         self.channel_network_path = channel_network_path
         self.cost_function_channel_path = cost_function_channel_path
-        self.streamcell_path = streamcell_path
+        self.hand_path = hand_path
 
         self.catchment_path = catchment_path
 
@@ -662,8 +662,7 @@ class PyGeoFlood(object):
         local_cost_min: float | None = None,
     ):
         """
-        Calculate geodesic distance. This is a wrapper for the WhiteboxTools
-        `geodesic_distance` function.
+        Calculate geodesic distance.
 
         Parameters
         ---------
@@ -1202,3 +1201,54 @@ class PyGeoFlood(object):
             file_path=shp_path,
         )
         print(f"Channel network vector written to {str(shp_path)}")
+
+    @t.time_it
+    def hand(
+        self,
+        custom_path: str | PathLike = None,
+        **wbt_args,
+    ):
+        """
+        Calculate Height Above Nearest Drainage (HAND). Returns a raster with
+        each cell's vertical elevation above its nearest stream cell, measured
+        along the downslope d8 flowpath from the cell. This is a wrapper for
+        the WhiteboxTools `elevation_above_stream` function.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Path to save HAND raster. If not provided, basins raster will be
+            saved in project directory.
+        wbt_args : `dict`, optional
+            Additional arguments to pass to the WhiteboxTools
+            `elevation_above_stream` function. See WhiteboxTools documentation
+            for details.
+        """
+
+        required_rasters = [
+            ("Filled DEM", self.filled_path),
+            ("Channel network raster", self.channel_network_path),
+        ]
+        t.check_attributes(required_rasters, "HAND")
+
+        # get file path for HAND
+        self.hand_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="HAND",
+        )
+
+        # get instance of WhiteboxTools
+        wbt = t.get_WhiteboxTools()
+
+        # calculate HAND
+        # use absolute paths to avoid errors
+        wbt.elevation_above_stream(
+            dem=self.filled_path.resolve(),
+            streams=self.channel_network_path.resolve(),
+            output=self.hand_path.resolve(),
+            **wbt_args,
+        )
+
+        print(f"HAND raster written to {str(self.hand_path)}")
