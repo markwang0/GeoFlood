@@ -2,8 +2,10 @@ import geopandas as gpd
 import numpy as np
 import psutil
 import time
+import pandas as pd
 import rasterio as rio
 import skfmm
+import sys
 import warnings
 
 from functools import wraps
@@ -11,15 +13,22 @@ from numba import jit, prange
 from os import PathLike
 from pathlib import Path
 from rasterio.features import rasterize
+from rasterio.transform import rowcol, xy
 from scipy import ndimage
 from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
-from shapely.geometry import Point
+from skimage.graph import route_through_array
+from shapely.geometry import LineString, Point
 from whitebox.whitebox_tools import WhiteboxTools
 
 warnings.filterwarnings(
     action="ignore",
     message="Invalid value encountered",
+    category=RuntimeWarning,
+)
+warnings.filterwarnings(
+    action="ignore",
+    message="divide by zero encountered",
     category=RuntimeWarning,
 )
 
@@ -85,12 +94,12 @@ def time_it(func: callable) -> callable:
 
         # Check if duration is over 60 minutes (3600 seconds)
         if duration > 3600:
-            print(f"{func.__name__} completed in {duration / 3600:.4f} hours")
+            print(f"\n{func.__name__} completed in {duration / 3600:.4f} hours")
         # Check if duration is over 60 seconds
         elif duration > 60:
-            print(f"{func.__name__} completed in {duration / 60:.4f} minutes")
+            print(f"\n{func.__name__} completed in {duration / 60:.4f} minutes")
         else:
-            print(f"{func.__name__} completed in {duration:.4f} seconds")
+            print(f"\n{func.__name__} completed in {duration:.4f} seconds")
         return result
 
     return wrapper
@@ -114,15 +123,16 @@ def check_attributes(
 
 
 def read_raster(
-    raster_path: str,
+    file_path: str,
 ) -> tuple[np.ndarray, rio.profiles.Profile | dict, float | int]:
     """
     Read a raster file and return the array, rasterio profile, and pixel scale.
 
     Parameters
     ----------
-    raster_path : `str`
+    file_path : `str`
         Path to raster file.
+
 
     Returns
     -------
@@ -133,7 +143,7 @@ def read_raster(
     pixel_scale : `float` | `int`
         Pixel scale of raster.
     """
-    with rio.open(raster_path) as ds:
+    with rio.open(file_path) as ds:
         raster = ds.read(1)
         profile = ds.profile
     pixel_scale = profile["transform"][0]
@@ -168,35 +178,15 @@ def write_raster(
         ds.write(raster, 1)
 
 
-def read_vector(
-    file_path: str | PathLike,
-) -> gpd.GeoDataFrame:
-    """
-    Read a vector file.
-
-    Parameters
-    ----------
-    file_path : `str` | `os.PathLike`
-        Path to vector file.
-
-    Returns
-    -------
-    gdf : `geopandas.GeoDataFrame`
-        GeoDataFrame of vector file.
-    """
-    gdf = gpd.read_file(file_path)
-    return gdf
-
-
-def write_vector(
+def write_vector_points(
     rows: np.ndarray,
     cols: np.ndarray,
     profile: rio.profiles.Profile | dict,
     dataset_name: str,
     file_path: str | PathLike,
-):
+) -> None:
     """
-    Write a vector file.
+    Write points to a vector file.
 
     Parameters
     ----------
@@ -207,7 +197,7 @@ def write_vector(
     profile : `rasterio.profiles.Profile` | `dict`
         Raster profile.
     dataset_name : `str`
-        Name of dataset.
+        Name of "Type" field.
     file_path : `str` | `os.PathLike`
         Path to write file.
     """
@@ -218,7 +208,7 @@ def write_vector(
     # Use rasterio.transform.xy to project xx, yy points
     rows, cols = np.array(rows), np.array(cols)
     xy_proj = [
-        rio.transform.xy(transform, rows[i], cols[i], offset="center")
+        xy(transform, rows[i], cols[i], offset="center")
         for i in range(len(rows))
     ]
 
@@ -243,6 +233,101 @@ def write_vector(
 
     # Write the GeoDataFrame to a shapefile
     gdf.to_file(file_path)
+
+
+def write_vector_lines(
+    rowcol_list: list[tuple[np.ndarray, np.ndarray]],
+    keys: list[str],
+    profile: rio.profiles.Profile | dict,
+    dataset_name: str,
+    file_path: str | PathLike,
+) -> None:
+    """
+    Write lines to a vector file.
+
+    Parameters
+    ----------
+    rowcol_list : `list`
+        List of (row, col) arrays.
+    keys : `list`
+        List of keys.
+    profile : `rasterio.profiles.Profile` | `dict`
+        Raster profile.
+    dataset_name : `str`
+        Name of "Type" field.
+    file_path : `str` | `os.PathLike`
+        Path to write file.
+    """
+    transform = profile["transform"]
+    crs = profile["crs"]
+
+    lines = []
+    geometry = []
+    for i, (rows, cols) in enumerate(rowcol_list):
+        # convert cells (row, col) to points (x, y) with rasterio.transform.xy
+        xy_coords = [
+            xy(transform, row, col, offset="center")
+            for row, col in zip(rows, cols)
+        ]
+
+        # Create LineString from projected coordinates
+        geometry.append(LineString(xy_coords))
+
+        lines.append(
+            {
+                "Type": dataset_name,
+                "HYDROID": keys[i],
+            }
+        )
+
+    # Create a GeoDataFrame from the lines and set the CRS
+    gdf = gpd.GeoDataFrame(lines, geometry=geometry, crs=crs)
+
+    # Write the GeoDataFrame to a shapefile
+    gdf.to_file(file_path)
+
+
+def rasterize_flowline(
+    flowline_gdf: gpd.GeoDataFrame,
+    ref_profile: rio.profiles.Profile | dict,
+    buffer: float | None = None,
+) -> np.ndarray:
+    """
+    Rasterize flowline GeoDataFrame.
+
+    Parameters
+    ----------
+    flowline_gdf : `geopandas.GeoDataFrame`
+        GeoDataFrame of flowline.
+    ref_profile : `rasterio.profiles.Profile` | `dict`
+        Reference raster profile.
+    buffer : `float`, optional
+        Buffer distance. If None, no buffer is applied. Default is None.
+
+    Returns
+    -------
+    flowline_raster : `numpy.ndarray`
+        Rasterized flowline of type int16.
+    """
+
+    # reproject flowline to match reference profile if necessary
+    if flowline_gdf.crs != ref_profile["crs"]:
+        flowline_gdf = flowline_gdf.to_crs(ref_profile["crs"])
+
+    if buffer is not None:
+        flowline_gdf["geometry"] = flowline_gdf.buffer(buffer)
+
+    shapes = ((geom, 1) for geom in flowline_gdf.geometry)
+
+    flowline_raster = rasterize(
+        shapes=shapes,
+        fill=0,
+        out_shape=(ref_profile["height"], ref_profile["width"]),
+        transform=ref_profile["transform"],
+        dtype="int16",
+    )
+
+    return flowline_raster
 
 
 def get_file_path(
@@ -286,6 +371,23 @@ def get_file_path(
     return file_path
 
 
+def minmax_scale(array: np.ndarray) -> np.ndarray:
+    """
+    Min-max scale an array to have values between 0 and 1.
+
+    Parameters
+    ----------
+    array : `numpy.ndarray`
+        Array to scale.
+
+    Returns
+    -------
+    scaled_array : `numpy.ndarray`
+        Min-max scaled array.
+    """
+    return (array - np.nanmin(array)) / (np.nanmax(array) - np.nanmin(array))
+
+
 def get_WhiteboxTools(
     verbose: bool = False,
     compress: bool = True,
@@ -309,6 +411,35 @@ def get_WhiteboxTools(
     wbt.set_verbose_mode(verbose)
     wbt.set_compress_rasters(compress)
     return wbt
+
+
+def get_combined_cost(
+    weights_arrays: list[tuple[float, np.ndarray]],
+    return_reciprocal: bool = False,
+) -> np.ndarray:
+    """
+    Get combined cost array of the form:
+    combined_cost = 1 / (w1 * array1 + w2 * array2 + ... + wn * arrayn)
+
+    Parameters
+    ----------
+    weights_arrays : `list`
+        List of (weight, array) tuples. dtype: (`float`, `numpy.ndarray`)
+    return_reciprocal : `bool`, optional
+        Return reciprocal of combined cost. Default is False.
+
+    Returns
+    -------
+    combined_cost : `numpy.ndarray`
+        Combined cost array.
+    """
+    cost_repciprocal = sum(
+        weight * array for weight, array in weights_arrays if array is not None
+    )
+    if return_reciprocal:
+        return cost_repciprocal
+    else:
+        return 1 / cost_repciprocal
 
 
 # Gaussian Filter
@@ -720,7 +851,7 @@ def fast_marching(
         phi[fmm_start_points[0, i], fmm_start_points[1, i]] = -1
         del maskedBasinFAC
         # print RAM usage per iteration
-        print(f"FMM {i+1}/{fmm_total_iter}: {get_ram_usage()}")
+        print(f"FMM iteration {i+1}/{fmm_total_iter}: {get_ram_usage()}")
         try:
             travel_time = skfmm.travel_time(phi, speed, dx=0.01)
         except IOError as e:
@@ -870,10 +1001,7 @@ def jit_channel_heads(
     return channel_heads[:ch_count]
 
 
-def get_endpoints(in_shp: str | PathLike) -> gpd.GeoDataFrame:
-    # Read the shapefile into a GeoDataFrame
-    gdf = gpd.read_file(in_shp)
-
+def get_endpoints(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     # Extract start and end points directly into the GeoDataFrame
     gdf["START_X"] = gdf.geometry.apply(lambda geom: geom.coords[0][0])
     gdf["START_Y"] = gdf.geometry.apply(lambda geom: geom.coords[0][1])
@@ -1023,15 +1151,103 @@ def get_binary_hand(
     """
 
     # convert flowline to array with dem as reference
-    shapes = ((geom, 1) for geom in flowline.geometry)
-    flowline_raster = rasterize(
-        shapes=shapes,
-        fill=0,
-        out_shape=(dem_profile["height"], dem_profile["width"]),
-        transform=dem_profile["transform"],
-        dtype="int16",
+    flowline_raster = rasterize_flowline(
+        flowline_gdf=flowline, ref_profile=dem_profile
     )
 
     binary_hand = jit_binary_hand(dem, flowline_raster, dem_profile["nodata"])
 
     return binary_hand
+
+
+def Channel_Reconstruct(
+    stream_cell: dict[int, list[np.ndarray]],
+    numberOfEndPoints: int,
+)-> dict[int, list[np.ndarray] | list[int]]:
+    # Initialize an empty list to store (row, col) tuples
+    rowcol_list = []
+    # Loop through each stream path and extend the list with (row, col)tuples
+    for i in range(numberOfEndPoints):
+        rowcol_list.extend(zip(stream_cell[i][0], stream_cell[i][1]))
+    # Create a DataFrame from the list of tuples
+    df_channel = pd.DataFrame(rowcol_list, columns=["row", "col"])
+    # Group by row and col to calculate the size (count of occurrences) of each pair
+    size_sr = df_channel.groupby(["row", "col"]).size().to_dict()
+
+    new_stream_cell = {}
+    StartpointList = []
+    k = 0
+    for i in range(numberOfEndPoints):
+        for j in range(stream_cell[i][0].size):
+            # append cell to the starting point list if it has an index of zero
+            row = stream_cell[i][0, j]
+            col = stream_cell[i][1, j]
+            if j == 0:
+                if i != 0:
+                    k += 1
+                StartpointList.append([row, col])
+                new_stream_cell[k] = [[row], [col]]
+            # Checking if the path cell at the current iteration is the same as the
+            # previous iteration. If it is, append to the 'new_stream_cell'.
+            else:
+                prev_row = stream_cell[i][0, j - 1]
+                prev_col = stream_cell[i][1, j - 1]
+                if size_sr[row, col] == size_sr[prev_row, prev_col]:
+                    new_stream_cell[k][0].append(row)
+                    new_stream_cell[k][1].append(col)
+
+                # When this condition is satisfied, additional start points are added to the
+                # 'StartpointList' variable. This leads to unwanted segmentation of the
+                # extracted channel network.
+                else:
+                    if [row, col] not in StartpointList:
+                        continue
+                    else:
+                        new_stream_cell[k][0].append(row)
+                        new_stream_cell[k][1].append(col)
+                        k += 1
+                        break
+    paths_list = []
+    keyList = []
+    for key in list(new_stream_cell.keys()):
+        paths_list.append(np.asarray(new_stream_cell[key]))
+        keyList.append(key)
+    print(f"Number of endpoints: {len(StartpointList)}")
+
+    return new_stream_cell
+
+
+def get_channel_network(
+    cost: np.ndarray,
+    df_flowline_path: str | PathLike,
+    transform: rio.transform.Affine,
+) -> tuple[np.ndarray, list[np.ndarray], list[int]]:
+    df_flowline = pd.read_csv(df_flowline_path)
+    channel_network = np.zeros_like(cost, dtype="uint8")
+    stream_cell = {}
+    total_endpoints = len(df_flowline)
+    for i, row in df_flowline.iterrows():
+        startXCoord = float(row["START_X"])
+        startYCoord = float(row["START_Y"])
+        endXCoord = float(row["END_X"])
+        endYCoord = float(row["END_Y"])
+        startIndexY, startIndexX = rowcol(transform, startXCoord, startYCoord)
+        stopIndexY, stopIndexX = rowcol(transform, endXCoord, endYCoord)
+        print(f"Creating path {i+1}/{total_endpoints}: {get_ram_usage()}")
+        indices, _ = route_through_array(
+            cost,
+            (startIndexY, startIndexX),
+            (stopIndexY, stopIndexX),
+            geometric=True,
+            fully_connected=True,
+        )
+        indices = np.array(indices).T
+        stream_cell[i] = indices
+        channel_network[indices[0], indices[1]] = 1
+        del indices
+    new_stream_cell = Channel_Reconstruct(stream_cell, total_endpoints)
+
+    stream_keys = [key for key in new_stream_cell.keys()]
+    stream_rowcol = [np.asarray(path) for path in new_stream_cell.values()]
+
+    return channel_network, stream_rowcol, stream_keys

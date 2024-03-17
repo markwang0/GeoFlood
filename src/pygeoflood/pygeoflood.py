@@ -1,9 +1,14 @@
+import geopandas as gpd
+import fiona
 import numpy as np
+import pandas as pd
+import rasterio as rio
 import sys
 
 from . import tools as t
 from os import PathLike
 from pathlib import Path
+from rasterio.warp import transform_bounds
 
 
 class PyGeoFlood(object):
@@ -25,13 +30,19 @@ class PyGeoFlood(object):
     flow_skeleton_path = t.path_property("flow_skeleton_path")
     curvature_skeleton_path = t.path_property("curvature_skeleton_path")
     combined_skeleton_path = t.path_property("combined_skeleton_path")
-    cost_function_path = t.path_property("cost_function_path")
+    cost_function_geodesic_path = t.path_property("cost_function_geodesic_path")
     geodesic_distance_path = t.path_property("geodesic_distance_path")
     channel_heads_path = t.path_property("channel_heads_path")
     flowline_path = t.path_property("flowline_path")
-    catchment_path = t.path_property("catchment_path")
     endpoints_path = t.path_property("endpoints_path")
     binary_hand_path = t.path_property("binary_hand_path")
+    custom_flowline_path = t.path_property("custom_flowline_path")
+    custom_flowline_raster_path = t.path_property("custom_flowline_raster_path")
+    channel_network_path = t.path_property("channel_network_path")
+    cost_function_channel_path = t.path_property("cost_function_channel_path")
+    streamcell_path = t.path_property("streamcell_path")
+
+    catchment_path = t.path_property("catchment_path")
 
     def __init__(
         self,
@@ -48,13 +59,18 @@ class PyGeoFlood(object):
         flow_skeleton_path=None,
         curvature_skeleton_path=None,
         combined_skeleton_path=None,
-        cost_function_path=None,
+        cost_function_geodesic_path=None,
         geodesic_distance_path=None,
         channel_heads_path=None,
         flowline_path=None,
         endpoints_path=None,
-        catchment_path=None,
         binary_hand_path=None,
+        custom_flowline_path=None,
+        custom_flowline_raster_path=None,
+        channel_network_path=None,
+        cost_function_channel_path=None,
+        streamcell_path=None,
+        catchment_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -87,13 +103,19 @@ class PyGeoFlood(object):
         self.flow_skeleton_path = flow_skeleton_path
         self.curvature_skeleton_path = curvature_skeleton_path
         self.combined_skeleton_path = combined_skeleton_path
-        self.cost_function_path = cost_function_path
+        self.cost_function_geodesic_path = cost_function_geodesic_path
         self.geodesic_distance_path = geodesic_distance_path
         self.channel_heads_path = channel_heads_path
         self.flowline_path = flowline_path
         self.endpoints_path = endpoints_path
-        self.catchment_path = catchment_path
         self.binary_hand_path = binary_hand_path
+        self.custom_flowline_path = custom_flowline_path
+        self.custom_flowline_raster_path = custom_flowline_raster_path
+        self.channel_network_path = channel_network_path
+        self.cost_function_channel_path = cost_function_channel_path
+        self.streamcell_path = streamcell_path
+
+        self.catchment_path = catchment_path
 
     # string representation of class
     # output can be used to recreate instance
@@ -688,45 +710,52 @@ class PyGeoFlood(object):
         )
 
         # Computing the local cost function
-        # curvature = t.Curvature_Preparation(curvature, normalize_curvature)
+        # min-max normalization of curvature (0 to 1)
         if normalize_curvature:
-            c_min = np.nanmin(curvature)
-            c_max = np.nanmax(curvature)
-            curvature = (curvature - c_min) / (c_max - c_min)
+            curvature = t.minmax_scale(curvature)
         curvature[np.isnan(curvature)] = 0
 
         # calculate cost function
         # Calculate the local reciprocal cost (weight, or propagation speed
-        # in the eikonal equation sense).  If the cost function isn't defined,
-        # default to old cost function.
+        # in the eikonal equation sense)
+        # (mfd_fac + flowMean * combined_skeleton + flowMean * curvature)
         flowMean = np.nanmean(mfd_fac)
-        cost_function = (
-            mfd_fac + flowMean * combined_skeleton + flowMean * curvature
+        weights_arrays = [
+            (1, mfd_fac),
+            (flowMean, combined_skeleton),
+            (flowMean, curvature),
+        ]
+        cost_function_geodesic = t.get_combined_cost(
+            weights_arrays, return_reciprocal=True
         )
         if local_cost_min is not None:
-            cost_function[cost_function < local_cost_min] = 1.0
+            cost_function_geodesic[cost_function_geodesic < local_cost_min] = (
+                1.0
+            )
         # print("1/cost min: ", np.nanmin(cost_function))
         # print("1/cost max: ", np.nanmax(cost_function))
         del curvature, combined_skeleton
 
         # Compute the geodesic distance using Fast Marching Method
         geodesic_distance = t.fast_marching(
-            fmm_start_points, basins, mfd_fac, cost_function
+            fmm_start_points, basins, mfd_fac, cost_function_geodesic
         )
 
         if write_cost_function:
-            self.cost_function_path = t.get_file_path(
+            self.cost_function_geodesic_path = t.get_file_path(
                 custom_path=None,
                 project_dir=self.project_dir,
                 dem_name=self.dem_path.stem,
-                suffix="cost_function",
+                suffix="cost_function_geodesic",
             )
             t.write_raster(
-                raster=cost_function,
+                raster=cost_function_geodesic,
                 profile=filt_profile,
-                file_path=self.cost_function_path,
+                file_path=self.cost_function_geodesic_path,
             )
-            print(f"Cost function written to {str(self.cost_function_path)}")
+            print(
+                f"Cost function written to {str(self.cost_function_geodesic_path)}"
+            )
 
         # get file path for geodesic distance
         self.geodesic_distance_path = t.get_file_path(
@@ -804,8 +833,8 @@ class PyGeoFlood(object):
             extension=vector_extension,
         )
 
-        # write channel heads shapefile
-        t.write_vector(
+        # write channel heads points shapefile
+        t.write_vector_points(
             rows=ch_rows,
             cols=ch_cols,
             profile=geo_profile,
@@ -837,7 +866,8 @@ class PyGeoFlood(object):
             "endpoints",
         )
 
-        endpoints = t.get_endpoints(self.flowline_path)
+        flowline = gpd.read_file(self.flowline_path)
+        endpoints = t.get_endpoints(flowline)
 
         # get file path for endpoints
         self.endpoints_path = t.get_file_path(
@@ -878,7 +908,7 @@ class PyGeoFlood(object):
 
         t.check_attributes(required_files, "endpoints")
 
-        flowline = t.read_vector(self.flowline_path)
+        flowline = gpd.read_file(self.flowline_path)
         dem, dem_profile, _ = t.read_raster(self.dem_path)
         binary_hand = t.get_binary_hand(flowline, dem, dem_profile)
         out_profile = dem_profile.copy()
@@ -886,8 +916,7 @@ class PyGeoFlood(object):
         binary_hand[dem == dem_profile["nodata"]] = out_profile["nodata"]
         binary_hand[np.isnan(dem)] = out_profile["nodata"]
 
-
-        # get file path for endpoints
+        # get file path for binary hand
         self.binary_hand_path = t.get_file_path(
             custom_path=custom_path,
             project_dir=self.project_dir,
@@ -903,3 +932,273 @@ class PyGeoFlood(object):
         )
 
         print(f"Binary HAND raster written to {str(self.binary_hand_path)}")
+
+    @t.time_it
+    def rasterize_custom_flowline(
+        self,
+        custom_path: str | PathLike = None,
+        layer: str | int = 0,
+    ):
+        """
+        Create custom flowline raster from user-provided flowline vector file.
+        This flowline could be obtained from the NHD HR dataset, for example.
+        The attribute `custom_flowline_path` must be set before running this method.
+        The flowline is buffered by 5 units and cropped to the extent of the DEM.
+        The crs of the flowline will be reprojected to the crs of the DEM.
+        Note: if you already have a custom flowline raster, you can skip this step
+        and set the `custom_flowline_raster_path` attribute directly.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save custom flowline raster. If not provided, custom
+            flowline raster will be saved in project directory. The flowline
+            raster has data type int16 with 1=channel and 0=non-channel.
+        layer : `str` or `int`, optional
+            Layer name or number in flowline vector file. Default is 0.
+        """
+
+        t.check_attributes(
+            [("Custom flowline vector file", self.custom_flowline_path)],
+            "custom_flowline",
+        )
+
+        # get bounding box and crs from DEM to clip flowline
+        with rio.open(self.dem_path) as ds:
+            bbox = ds.bounds
+            dem_profile = ds.profile
+
+        # transform bounding box to crs of flowline
+        with fiona.open(self.custom_flowline_path, layer=layer) as ds:
+            out_crs = ds.crs
+
+        bbox = transform_bounds(dem_profile["crs"], out_crs, *bbox)
+
+        # read custom flowline within bounding box and specified layer
+        custom_flowline = gpd.read_file(
+            self.custom_flowline_path,
+            bbox=bbox,
+            layer=layer,
+        )
+
+        # will reproject to dem_profile crs if necessary
+        custom_flowline_raster = t.rasterize_flowline(
+            flowline_gdf=custom_flowline,
+            ref_profile=dem_profile,
+            buffer=5,
+        )
+
+        # get file path for custom flowline raster
+        self.custom_flowline_raster_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="custom_flowline",
+        )
+
+        # write custom flowline raster
+        out_profile = dem_profile.copy()
+        out_profile.update(dtype="int16", nodata=-32768)
+        t.write_raster(
+            raster=custom_flowline_raster,
+            profile=out_profile,
+            file_path=self.custom_flowline_raster_path,
+        )
+
+        print(
+            f"Custom flowline raster written to {str(self.custom_flowline_raster_path)}"
+        )
+
+    @t.time_it
+    def extract_channel_network(
+        self,
+        custom_path: str | PathLike = None,
+        write_cost_function: bool = False,
+        use_custom_flowline: bool = False,
+        no_flowline: bool = False,
+        custom_weight_curvature: float | None = None,
+        custom_weight_mfd_fac: float | None = None,
+        custom_weight_binary_hand: float | None = None,
+        custom_weight_custom_flowline: float | None = None,
+    ):
+        """
+        Extract channel network. By default, curvature, flow accumulation, and
+        binary HAND (information from NHD MR flowline) are used to calculate the
+        cost function. A custom flowline such as the NHD HR flowline can be
+        included in the cost function with use_custom_flowline=True. Only curvature
+        and flow accumulataion will be considered if no_flowline=True. The cost
+        function is calculated as the reciprocal of the weighted sum of these
+        of these rasters. The cost function is thresholded and used to extract
+        the channel network.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save channel network raster. If not provided, channel
+            network raster will be saved in project directory. The channel network
+            vector file will have an identical name and path, but with the extension
+            ".shp".
+        write_cost_function : `bool`, optional
+            Whether to write cost function raster to file. Default is False.
+        use_custom_flowline : `bool`, optional
+            Whether to use custom flowline raster in cost function. Default is False.
+        no_flowline : `bool`, optional
+            Whether to use the NHD MR flowline information (binary HAND raster)
+            in the cost function. Default is False, so binary HAND raster will
+            be used by default.
+        custom_weight_curvature : `float`, optional
+            Custom weight for curvature in cost function. Default is None.
+        custom_weight_mfd_fac : `float`, optional
+            Custom weight for flow accumulation in cost function. Default is None.
+        custom_weight_binary_hand : `float`, optional
+            Custom weight for binary HAND in cost function. Default is None.
+        custom_weight_custom_flowline : `float`, optional
+            Custom weight for custom flowline in cost function. Default is None.
+        """
+
+        required_files = [
+            ("Curvature raster", self.curvature_path),
+            ("Flow accumulation raster", self.mfd_fac_path),
+            ("Endpoints csv", self.endpoints_path),
+        ]
+
+        t.check_attributes(required_files, "extract_channel_network")
+
+        # read and prepare required rasters
+        mfd_fac, fac_profile, _ = t.read_raster(self.mfd_fac_path)
+        mfd_fac[mfd_fac == fac_profile["nodata"]] = np.nan
+        mfd_fac = np.log(mfd_fac)
+        mfd_fac = t.minmax_scale(mfd_fac)
+
+        curvature, _, _ = t.read_raster(self.curvature_path)
+        curvature[(curvature < -10) | (curvature > 10)] = np.nan
+        curvature = t.minmax_scale(curvature)
+
+        binary_hand, _, _ = t.read_raster(self.binary_hand_path)
+
+        ### get cost surface array
+        # use custom (likely NHD HR) flowline, NHD MR flowlines (binary HAND),
+        # curvature, and flow accumulation in cost function
+        if use_custom_flowline:
+            required_files = [
+                ("Custom flowline raster", self.custom_flowline_raster_path),
+                ("Binary HAND raster", self.binary_hand_path),
+            ]
+            t.check_attributes(
+                required_files,
+                "extract_channel_network with use_custom_flowline=True",
+            )
+            # int16, 1 channel, 0 not
+            custom_flowline_raster, _, _ = t.read_raster(
+                self.custom_flowline_raster_path
+            )
+            weight_binary_hand = 0.75
+            weight_custom_flowline = 1
+
+        # use NHD MR flowlines (binary HAND), curvature, and flow accumulation
+        # in cost function (no custom flowline)
+        elif not no_flowline:
+            required_files = [
+                ("Binary HAND raster", self.binary_hand_path),
+            ]
+            t.check_attributes(required_files, "extract_channel_network")
+            custom_flowline_raster = None
+            weight_binary_hand = 0.75
+            weight_custom_flowline = 0
+
+        # use curvature and flow accumulation in cost function
+        # (no NHD MR or custom flowlines)
+        else:
+            custom_flowline_raster = None
+            weight_binary_hand = 0
+            weight_custom_flowline = 0
+
+        # default curvature and flow accumulation weights
+        curv_weight_str = " (mean flow accumulation)"
+        weight_curvature = np.nanmean(mfd_fac)
+        weight_mfd_fac = 1
+
+        # set custom weights if provided
+        if custom_weight_curvature is not None:
+            weight_curvature = custom_weight_curvature
+            curv_weight_str = ""
+        if custom_weight_mfd_fac is not None:
+            weight_mfd_fac = custom_weight_mfd_fac
+        if custom_weight_binary_hand is not None:
+            weight_binary_hand = custom_weight_binary_hand
+        if custom_weight_custom_flowline is not None:
+            weight_custom_flowline = custom_weight_custom_flowline
+
+        print("Cost function weights:")
+        print(f"curvature          {weight_curvature:.4f}{curv_weight_str}")
+        print(f"mfd_fac            {weight_mfd_fac:.4f}")
+        print(f"binary_hand        {weight_binary_hand:.4f}")
+        print(f"custom_flowline    {weight_custom_flowline:.4f}\n")
+
+        weights_arrays = [
+            (weight_curvature, curvature),
+            (weight_mfd_fac, mfd_fac),
+            (weight_binary_hand, binary_hand),
+            (weight_custom_flowline, custom_flowline_raster),
+        ]
+
+        cost = t.get_combined_cost(weights_arrays)
+
+        print(f"Cost min: {np.nanmin(cost)}")
+        print(f"Cost max: {np.nanmax(cost)}")
+        print(f"cost shape: {cost.shape}")
+
+        if write_cost_function:
+            self.cost_function_channel_path = t.get_file_path(
+                custom_path=None,
+                project_dir=self.project_dir,
+                dem_name=self.dem_path.stem,
+                suffix="cost_function_channel",
+            )
+            t.write_raster(
+                raster=cost,
+                profile=fac_profile,
+                file_path=self.cost_function_channel_path,
+            )
+            print(
+                f"Cost function written to {str(self.cost_function_channel_path)}"
+            )
+        # threshold cost surface
+        # get 2.5% quantile
+        cost_quantile = np.quantile(cost[~np.isnan(cost)], 0.025)
+        artificial_high_cost = 100000
+        cost[(cost >= cost_quantile) | np.isnan(cost)] = artificial_high_cost
+        channel_network, stream_rowcol, stream_keys = t.get_channel_network(
+            cost,
+            self.endpoints_path,
+            fac_profile["transform"],
+        )
+
+        ### write channel network raster and shapefile
+        # raster
+        self.channel_network_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="channel_network",
+        )
+        out_profile = fac_profile.copy()
+        out_profile.update(dtype="int16", nodata=-32768)
+        t.write_raster(
+            raster=channel_network,
+            profile=out_profile,
+            file_path=self.channel_network_path,
+        )
+        print(
+            f"Channel network raster written to {str(self.channel_network_path)}"
+        )
+        # shapefile
+        shp_path = self.channel_network_path.with_suffix(".shp")
+        t.write_vector_lines(
+            rowcol_list=stream_rowcol,
+            keys=stream_keys,
+            profile=fac_profile,
+            dataset_name="ChannelNetwork",
+            file_path=shp_path,
+        )
+        print(f"Channel network vector written to {str(shp_path)}")
