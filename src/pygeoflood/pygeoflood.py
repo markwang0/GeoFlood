@@ -8,6 +8,7 @@ import sys
 from . import tools as t
 from os import PathLike
 from pathlib import Path
+from rasterio.features import rasterize
 from rasterio.warp import transform_bounds
 
 
@@ -42,7 +43,13 @@ class PyGeoFlood(object):
     channel_network_raster_path = t.path_property("channel_network_raster_path")
     cost_function_channel_path = t.path_property("cost_function_channel_path")
     hand_path = t.path_property("hand_path")
-    segmented_channel_network_path = t.path_property("segmented_channel_network_path")
+    segmented_channel_network_path = t.path_property(
+        "segmented_channel_network_path"
+    )
+    segmented_channel_network_raster_path = t.path_property(
+        "segmented_channel_network_raster_path"
+    )
+    segment_catchments_path = t.path_property("segment_catchments_path")
 
     catchment_path = t.path_property("catchment_path")
 
@@ -73,8 +80,10 @@ class PyGeoFlood(object):
         channel_network_raster_path=None,
         cost_function_channel_path=None,
         hand_path=None,
-        catchment_path=None,
         segmented_channel_network_path=None,
+        segmented_channel_network_raster_path=None,
+        segment_catchments_path=None,
+        catchment_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -120,6 +129,10 @@ class PyGeoFlood(object):
         self.cost_function_channel_path = cost_function_channel_path
         self.hand_path = hand_path
         self.segmented_channel_network_path = segmented_channel_network_path
+        self.segmented_channel_network_raster_path = (
+            segmented_channel_network_raster_path
+        )
+        self.segment_catchments_path = segment_catchments_path
 
         self.catchment_path = catchment_path
 
@@ -1325,4 +1338,86 @@ class PyGeoFlood(object):
 
         print(
             f"Segmented channel network written to {str(self.segmented_channel_network_path)}"
+        )
+
+    @t.time_it
+    def delineate_segment_catchments(
+        self,
+        custom_path: str | PathLike = None,
+        **wbt_args,
+    ):
+        """
+        Delineate catchments for each segment of the channel network.
+        The D8 flow direction raster and segmented channel network vector are
+        required to run delineate_segment_catchments. This is a wrapper for
+        the WhiteboxTools `watershed` function.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save segment catchments raster. If not provided,
+            segment catchments will be saved in project directory.
+        **wbt_args : `dict`, optional
+        """
+
+        required_files = [
+            (
+                "Segmented channel network vector",
+                self.segmented_channel_network_path,
+            ),
+            ("D8 flow direction raster", self.d8_fdr_path),
+        ]
+        t.check_attributes(required_files, "delineate_segment_catchments")
+
+        # rasterize segmented channel network to use in wbt.watershed()
+        with rio.open(self.d8_fdr_path) as ds:
+            profile = ds.profile
+        gdf = gpd.read_file(self.segmented_channel_network_path)
+        segments_raster = rasterize(
+            zip(gdf.geometry, gdf["HYDROID"]),
+            out_shape=(profile["height"], profile["width"]),
+            dtype="int16",
+            transform=profile["transform"],
+            fill=0,
+        )
+
+        # get file path for segmented channel network raster
+        self.segmented_channel_network_raster_path = t.get_file_path(
+            custom_path=None,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="segmented_channel_network",
+        )
+
+        # write segmented channel network raster
+        out_profile = profile.copy()
+        out_profile.update(dtype="int16", nodata=-32768)
+        t.write_raster(
+            raster=segments_raster,
+            profile=out_profile,
+            file_path=self.segmented_channel_network_raster_path,
+        )
+
+        # get file path for segmented channel network catchments
+        self.segment_catchments_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="segment_catchments",
+        )
+
+        # get instance of WhiteboxTools
+        wbt = t.get_WhiteboxTools()
+
+        # delineate catchments for each segment
+        # use absolute paths to avoid errors
+        wbt.watershed(
+            d8_pntr=self.d8_fdr_path.resolve(),
+            pour_pts=self.segmented_channel_network_raster_path.resolve(),
+            output=self.segment_catchments_path.resolve(),
+            **wbt_args,
+        )
+
+        print(
+            f"Segment catchments written to {str(self.segment_catchments_path)}"
         )
