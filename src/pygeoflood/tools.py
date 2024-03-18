@@ -1338,9 +1338,10 @@ def split_network(
     all_segments = []
     for _, row in input_gdf.iterrows():
         line = row.geometry
-        all_segments.extend(split_line(line, segment_length))
-
-    # assert that there are no overlapping segments
-    assert linemerge(all_segments).is_simple, "Overlapping segments detected"
+        segmented_line = split_line(line, segment_length)
+        # assert that there are no overlapping segments
+        msg = "Overlapping segments detected"
+        assert linemerge(segmented_line).is_simple, msg
+        all_segments.extend(segmented_line)
 
     return all_segments
