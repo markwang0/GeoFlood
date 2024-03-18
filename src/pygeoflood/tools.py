@@ -19,6 +19,7 @@ from scipy.signal import convolve2d
 from scipy.stats.mstats import mquantiles
 from skimage.graph import route_through_array
 from shapely.geometry import LineString, Point
+from shapely.ops import linemerge, snap, split
 from whitebox.whitebox_tools import WhiteboxTools
 
 warnings.filterwarnings(
@@ -1160,10 +1161,10 @@ def get_binary_hand(
     return binary_hand
 
 
-def Channel_Reconstruct(
+def reconstruct_channel(
     stream_cell: dict[int, list[np.ndarray]],
     numberOfEndPoints: int,
-)-> dict[int, list[np.ndarray] | list[int]]:
+) -> dict[int, list[np.ndarray] | list[int]]:
     # Initialize an empty list to store (row, col) tuples
     rowcol_list = []
     # Loop through each stream path and extend the list with (row, col)tuples
@@ -1245,9 +1246,101 @@ def get_channel_network(
         stream_cell[i] = indices
         channel_network[indices[0], indices[1]] = 1
         del indices
-    new_stream_cell = Channel_Reconstruct(stream_cell, total_endpoints)
+    new_stream_cell = reconstruct_channel(stream_cell, total_endpoints)
 
     stream_keys = [key for key in new_stream_cell.keys()]
     stream_rowcol = [np.asarray(path) for path in new_stream_cell.values()]
 
     return channel_network, stream_rowcol, stream_keys
+
+
+# # snap/interpolate point along line method
+# # currently not used
+# def old_split_line(
+#     line: LineString,
+#     segment_length: int | float,
+# ) -> list[LineString]:
+#     # create segment endpoints along the line using specified segment length
+#     distances = np.arange(segment_length, line.length, segment_length)
+
+#     # return original line if segment length is longer than line length
+#     if distances.size == 0:
+#         return [line]
+
+#     else:
+#         split_points = [line.interpolate(distance) for distance in distances]
+#         # Initialize the list of split lines
+#         split_lines = []
+#         current_line = line
+
+#         for i, point in enumerate(split_points):
+#             # allow segment distances to v
+#             # tolerance should be equal to pixel scale of DEM?
+#             snapped_point = snap(point, current_line, tolerance=1)
+#             # Attempt to split the current line segment at the point
+#             split_result = split(current_line, snapped_point)
+#             # Handling the split result
+#             if len(split_result.geoms) > 1:
+#                 # The line was successfully split; update current_line and store the first part
+#                 # The second part becomes the new line to split further
+#                 current_line = split_result.geoms[1]
+#                 # The first part is stored
+#                 split_lines.append(split_result.geoms[0])
+#             else:
+#                 print(f"Unsuccessful snap at HydroID {i+1}")
+
+#         # Add the remaining part of the line after the last split
+#         split_lines.append(current_line)
+
+#         return split_lines
+
+
+# this function is less efficient than old_split_line above because
+# it loops through every point in the line, but is more robust to
+# errors. old_split_line will fail if the snapping tolerance is incorrect
+# (seems like the tolerance should equal the pixel scale of the DEM)
+def split_line(
+    line: LineString,
+    segment_length: int | float,
+) -> list[LineString]:
+
+    # constituent points of LineString
+    points = list(line.coords)
+    # store segments in a list
+    line_segments = []
+    # add first segment point
+    segment_points = [points[0]]
+
+    for i in range(1, len(points)):
+        # potential new segment
+        segment = LineString(segment_points + [points[i]])
+        if segment.length > segment_length:
+            # if adding current point causes current segment length to
+            # exceed segment_length, add current segment to segments
+            line_segments.append(LineString(segment_points))
+            segment_points = [points[i - 1], points[i]]  # Start a new segment
+        else:
+            # If not, add the current point to the current segment
+            segment_points.append(points[i])
+
+    # Add the last segment if it has more than one point
+    if len(segment_points) > 1:
+        line_segments.append(LineString(segment_points))
+
+    return line_segments
+
+
+def split_network(
+    input_gdf: gpd.GeoDataFrame,
+    segment_length: int | float,
+) -> list[LineString]:
+
+    all_segments = []
+    for _, row in input_gdf.iterrows():
+        line = row.geometry
+        all_segments.extend(split_line(line, segment_length))
+
+    # assert that there are no overlapping segments
+    assert linemerge(all_segments).is_simple, "Overlapping segments detected"
+
+    return all_segments

@@ -39,6 +39,7 @@ class PyGeoFlood(object):
     custom_flowline_path = t.path_property("custom_flowline_path")
     custom_flowline_raster_path = t.path_property("custom_flowline_raster_path")
     channel_network_path = t.path_property("channel_network_path")
+    channel_network_raster_path = t.path_property("channel_network_raster_path")
     cost_function_channel_path = t.path_property("cost_function_channel_path")
     hand_path = t.path_property("hand_path")
 
@@ -68,6 +69,7 @@ class PyGeoFlood(object):
         custom_flowline_path=None,
         custom_flowline_raster_path=None,
         channel_network_path=None,
+        channel_network_raster_path=None,
         cost_function_channel_path=None,
         hand_path=None,
         catchment_path=None,
@@ -112,6 +114,7 @@ class PyGeoFlood(object):
         self.custom_flowline_path = custom_flowline_path
         self.custom_flowline_raster_path = custom_flowline_raster_path
         self.channel_network_path = channel_network_path
+        self.channel_network_raster_path = channel_network_raster_path
         self.cost_function_channel_path = cost_function_channel_path
         self.hand_path = hand_path
 
@@ -1017,6 +1020,7 @@ class PyGeoFlood(object):
     def extract_channel_network(
         self,
         custom_path: str | PathLike = None,
+        vector_extension: str = "shp",
         write_cost_function: bool = False,
         use_custom_flowline: bool = False,
         no_flowline: bool = False,
@@ -1026,14 +1030,16 @@ class PyGeoFlood(object):
         custom_weight_custom_flowline: float | None = None,
     ):
         """
-        Extract channel network. By default, curvature, flow accumulation, and
-        binary HAND (information from NHD MR flowline) are used to calculate the
-        cost function. A custom flowline such as the NHD HR flowline can be
-        included in the cost function with use_custom_flowline=True. Only curvature
-        and flow accumulataion will be considered if no_flowline=True. The cost
-        function is calculated as the reciprocal of the weighted sum of these
-        of these rasters. The cost function is thresholded and used to extract
-        the channel network.
+        Extract channel network. The channel network will be written to raster
+        and vector datasets with the same name and different extensions.
+        By default, curvature, flow accumulation, and binary HAND (information
+        from NHD MR flowline) are used to calculate the cost function. A custom
+        flowline such as the NHD HR flowline can be included in the cost
+        function with use_custom_flowline=True. Only curvature and flow
+        accumulataion will be considered if no_flowline=True. The cost function
+        is calculated as the reciprocal of the weighted sum of these of these
+        rasters. The cost function is thresholded and used to extract the
+        channel network.
 
         Parameters
         ---------
@@ -1041,7 +1047,9 @@ class PyGeoFlood(object):
             Custom path to save channel network raster. If not provided, channel
             network raster will be saved in project directory. The channel network
             vector file will have an identical name and path, but with the extension
-            ".shp".
+            `vector_extension` (shp by default).
+        vector_extension : `str`, optional
+            Extension for vector file. Default is "shp".
         write_cost_function : `bool`, optional
             Whether to write cost function raster to file. Default is False.
         use_custom_flowline : `bool`, optional
@@ -1180,7 +1188,7 @@ class PyGeoFlood(object):
 
         ### write channel network raster and shapefile
         # raster
-        self.channel_network_path = t.get_file_path(
+        self.channel_network_raster_path = t.get_file_path(
             custom_path=custom_path,
             project_dir=self.project_dir,
             dem_name=self.dem_path.stem,
@@ -1191,21 +1199,25 @@ class PyGeoFlood(object):
         t.write_raster(
             raster=channel_network,
             profile=out_profile,
-            file_path=self.channel_network_path,
+            file_path=self.channel_network_raster_path,
         )
         print(
-            f"Channel network raster written to {str(self.channel_network_path)}"
+            f"Channel network raster written to {str(self.channel_network_raster_path)}"
         )
-        # shapefile
-        shp_path = self.channel_network_path.with_suffix(".shp")
+        # write vector dataset
+        self.channel_network_path = (
+            self.channel_network_raster_path.with_suffix(f".{vector_extension}")
+        )
         t.write_vector_lines(
             rowcol_list=stream_rowcol,
             keys=stream_keys,
             profile=fac_profile,
             dataset_name="ChannelNetwork",
-            file_path=shp_path,
+            file_path=self.channel_network_path,
         )
-        print(f"Channel network vector written to {str(shp_path)}")
+        print(
+            f"Channel network vector written to {str(self.channel_network_path)}"
+        )
 
     @t.time_it
     def calculate_hand(
@@ -1232,7 +1244,7 @@ class PyGeoFlood(object):
 
         required_rasters = [
             ("Filled DEM", self.filled_path),
-            ("Channel network raster", self.channel_network_path),
+            ("Channel network raster", self.channel_network_raster_path),
         ]
         t.check_attributes(required_rasters, "calculate_hand")
 
@@ -1251,9 +1263,50 @@ class PyGeoFlood(object):
         # use absolute paths to avoid errors
         wbt.elevation_above_stream(
             dem=self.filled_path.resolve(),
-            streams=self.channel_network_path.resolve(),
+            streams=self.channel_network_raster_path.resolve(),
             output=self.hand_path.resolve(),
             **wbt_args,
         )
 
         print(f"HAND raster written to {str(self.hand_path)}")
+
+    @t.time_it
+    def segment_channel_network(
+        self,
+        custom_path: str | PathLike = None,
+        vector_extension: str = "shp",
+        segment_length: int | float = 1000,
+    ):
+
+        t.check_attributes(
+            [("Channel network vector", self.channel_network_path)],
+            "segment_channel_network",
+        )
+
+        channel_network = gpd.read_file(self.channel_network_path)
+
+        segments = t.split_network(channel_network, segment_length)
+
+        # HydroID: 1, 2, 3, ... len(segments)
+        out_gdf = gpd.GeoDataFrame(
+            {
+                "HYDROID": [i + 1 for i in range(len(segments))],
+                "Length": [round(segment.length, 4) for segment in segments],
+                "geometry": segments,
+            },
+            crs=channel_network.crs,
+        )
+
+        self.segmented_channel_network_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="segmented_channel_network",
+            extension=vector_extension,
+        )
+
+        out_gdf.to_file(self.segmented_channel_network_path)
+
+        print(
+            f"Segmented channel network written to {str(self.segmented_channel_network_path)}"
+        )
