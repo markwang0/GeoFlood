@@ -42,6 +42,7 @@ class PyGeoFlood(object):
     channel_network_raster_path = t.path_property("channel_network_raster_path")
     cost_function_channel_path = t.path_property("cost_function_channel_path")
     hand_path = t.path_property("hand_path")
+    segmented_channel_network_path = t.path_property("segmented_channel_network_path")
 
     catchment_path = t.path_property("catchment_path")
 
@@ -73,6 +74,7 @@ class PyGeoFlood(object):
         cost_function_channel_path=None,
         hand_path=None,
         catchment_path=None,
+        segmented_channel_network_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -117,6 +119,7 @@ class PyGeoFlood(object):
         self.channel_network_raster_path = channel_network_raster_path
         self.cost_function_channel_path = cost_function_channel_path
         self.hand_path = hand_path
+        self.segmented_channel_network_path = segmented_channel_network_path
 
         self.catchment_path = catchment_path
 
@@ -1277,6 +1280,19 @@ class PyGeoFlood(object):
         vector_extension: str = "shp",
         segment_length: int | float = 1000,
     ):
+        """
+        Divide channel network into segments of a specified length.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save segmented channel network. If not provided,
+            segmented channel network will be saved in project directory.
+        vector_extension : `str`, optional
+            Extension for vector file. Default is "shp".
+        segment_length : `int` or `float`, optional
+            Length of segments. Default is 1000 units.
+        """
 
         t.check_attributes(
             [("Channel network vector", self.channel_network_path)],
