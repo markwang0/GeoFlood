@@ -20,7 +20,18 @@ from scipy.stats.mstats import mquantiles
 from skimage.graph import route_through_array
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge, snap, split
-from whitebox.whitebox_tools import WhiteboxTools
+
+# whitebox tools is imported differently depending on whether
+# it was installed with pip or conda-forge
+try:
+    from whitebox.whitebox_tools import WhiteboxTools
+except ImportError:
+    try:
+        from whitebox_tools import WhiteboxTools
+    except ImportError:
+        raise ImportError(
+            "Could not import WhiteboxTools. Please make sure it is installed."
+        )
 
 warnings.filterwarnings(
     action="ignore",
