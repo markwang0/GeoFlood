@@ -251,6 +251,10 @@ class PyGeoFlood(object):
             Variance of Gaussian filter. Default is 0.05.
         """
 
+        t.check_attributes(
+            [("PyGeoFlood.dem_path", self.dem_path)], "apply_nonlinear_filter"
+        )
+
         # read original DEM
         dem, dem_profile = t.read_raster(self.dem_path)
         pixel_scale = dem_profile["transform"].a
@@ -946,7 +950,7 @@ class PyGeoFlood(object):
         """
 
         t.check_attributes(
-            [("Flowline vector file", self.flowline_path)],
+            [("PyGeoFlood.flowline_path", self.flowline_path)],
             "find_endpoints",
         )
 
@@ -987,7 +991,7 @@ class PyGeoFlood(object):
 
         required_files = [
             ("DEM", self.dem_path),
-            ("Flowline vector file", self.flowline_path),
+            ("PyGeoFlood.flowline_path", self.flowline_path),
         ]
 
         t.check_attributes(required_files, "calculate_binary_hand")
@@ -1043,7 +1047,7 @@ class PyGeoFlood(object):
         """
 
         t.check_attributes(
-            [("Custom flowline vector file", self.custom_flowline_path)],
+            [("PyGeoFlood.custom_flowline_path", self.custom_flowline_path)],
             "rasterize_custom_flowline",
         )
 
@@ -1059,6 +1063,7 @@ class PyGeoFlood(object):
         bbox = transform_bounds(dem_profile["crs"], out_crs, *bbox)
 
         # read custom flowline within bounding box and specified layer
+        # layer default is 0, which will read the first (and likely only) layer
         custom_flowline = gpd.read_file(
             self.custom_flowline_path,
             bbox=bbox,
@@ -1369,7 +1374,7 @@ class PyGeoFlood(object):
         """
         check_files = [
             ("Channel network vector", self.channel_network_path),
-            ("Catchment vector file", self.catchment_path),
+            ("PyGeoFlood.catchment_path", self.catchment_path),
         ]
         t.check_attributes(check_files, "segment_channel_network")
 
@@ -1511,7 +1516,7 @@ class PyGeoFlood(object):
                 "Channel network segment catchments",
                 self.segment_catchments_raster_path,
             ),
-            ("Catchment vector file", self.catchment_path),
+            ("PyGeoFlood.catchment_path", self.catchment_path),
             ("HAND raster", self.hand_path),
         ]
 
@@ -1596,7 +1601,7 @@ class PyGeoFlood(object):
         """
         Calculate flood stage for each segment of the channel network.
         Forecasted streamflow values for each COMID (feature ID) must be set
-        in `streamflow_forecast_path` before running if custom_Q is not set.
+        in `PyGeoFlood.streamflow_forecast_path` before running if custom_Q is not set.
         If the streamflow forecast is a netCDF file it must be in NWM format
         (in xarray: 'streamflow' variable with a "feature_id" or "COMID" dim/coord).
         If the streamflow forecast is a CSV file, it must have columns
@@ -1615,17 +1620,21 @@ class PyGeoFlood(object):
         """
         required_files = [
             ("Synthetic rating curves", self.src_path),
-            ("Forecast table", self.streamflow_forecast_path),
+            (
+                "PyGeoFlood.streamflow_forecast_path",
+                self.streamflow_forecast_path,
+            ),
         ]
 
         if custom_Q is None:
             t.check_attributes(required_files, "calculate_flood_stage")
         else:
+            print(f"Applying custom streamflow to each segment: {custom_Q} cms")
             t.check_attributes([required_files[0]], "calculate_flood_stage")
 
         # read synthetic rating curves
         src = pd.read_csv(self.src_path)
-        src = src[["HYDROID", "Stage", "Volume_m3", "COMID", "Discharge_cms"]]
+        src = src[["HYDROID", "Stage_m", "Volume_m3", "COMID", "Discharge_cms"]]
 
         out_df = t.get_flood_stage(src, self.streamflow_forecast_path, custom_Q)
 
@@ -1638,4 +1647,4 @@ class PyGeoFlood(object):
         )
 
         out_df.to_csv(self.flood_stage_path, index=False)
-        print(f"Forecast table written to {str(self.flood_stage_path)}")
+        print(f"Flood stages written to {str(self.flood_stage_path)}")

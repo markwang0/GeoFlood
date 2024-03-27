@@ -1548,13 +1548,14 @@ def catchhydrogeo(
         cell_area,
     )
     # prepare data for DataFrame
+
     data = []
     for i in range(len(hydroids)):
         hydroid = int(hydroids[i])
         for h_idx in range(len(heights)):
             row = {
                 "HYDROID": hydroid,
-                "Stage": round(heights[h_idx], 4),
+                "Stage_m": round(heights[h_idx], 4),
                 "NumCells": CellCount[h_idx, i],
                 "SurfaceArea_m2": SurfaceArea[h_idx, i],
                 "BedArea_m2": BedArea[h_idx, i],
@@ -1604,20 +1605,18 @@ def catchhydrogeo(
 
 
 def get_flood_stage(src, streamflow_forecast_path, custom_Q):
+    comids = src["COMID"].unique()
     # open forecast table with xarray or pandas
-    if custom_Q is not None and streamflow_forecast_path is not None:
+    if custom_Q is None:
         if streamflow_forecast_path.suffix in [".nc", ".comp"]:
             with xr.open_dataset(streamflow_forecast_path) as ds:
                 reqd_cols_provided = "streamflow" in ds.variables and (
                     "COMID" in ds.variables or "feature_id" in ds.variables
                 )
                 if reqd_cols_provided:
-                    if "COMID" in ds.variables:
-                        comid = "COMID"
-                    else:
-                        comid = "feature_id"
+                    comid = "COMID" if "COMID" in ds.variables else "feature_id"
                     df = ds.streamflow[
-                        ds[comid].isin(src["COMID"].unique())
+                        ds[comid].isin(comids)
                     ].to_dataframe()
                     # keep only Discharge_cms and COMID columns
                     df["COMID"] = df.index
@@ -1634,11 +1633,7 @@ def get_flood_stage(src, streamflow_forecast_path, custom_Q):
                 "COMID" in df.columns or "feature_id" in df.columns
             )
             if reqd_cols_provided:
-                if "COMID" in df.columns:
-                    comid = "COMID"
-                else:
-                    comid = "feature_id"
-
+                comid = "COMID" if "COMID" in df.columns else "feature_id"
                 # filter forecast table to only COMIDS of interest
                 df = df[df[comid].isin(src["COMID"].unique())]
                 # keep only streamflow and COMID columns
@@ -1650,11 +1645,8 @@ def get_flood_stage(src, streamflow_forecast_path, custom_Q):
                 raise ValueError(
                     "CSV file must have COMID (or feature_id) and streamflow column headers"
                 )
-    else:
-        df = pd.DataFrame()
-        df["COMID"] = src["COMID"].unique()
     data = []
-    for comid in df["COMID"]:
+    for comid in comids:
         # assign constant streamflow to all segments if custom_Q is provided
         if custom_Q is not None:
             q = custom_Q
@@ -1662,7 +1654,7 @@ def get_flood_stage(src, streamflow_forecast_path, custom_Q):
             q = df[df["COMID"] == comid]["Discharge_cms"].values[0]
         for hydroid in src["HYDROID"].unique():
             q_lookup = src.loc[src["HYDROID"] == hydroid]["Discharge_cms"]
-            h_lookup = src.loc[src["HYDROID"] == hydroid]["Stage"]
+            h_lookup = src.loc[src["HYDROID"] == hydroid]["Stage_m"]
             # if q is less than q_lookup[0] h = 0
             # if q is greater than q_lookup[-1] h = -9999
             h = np.interp(q, q_lookup, h_lookup, left=0, right=-9999)
@@ -1671,7 +1663,7 @@ def get_flood_stage(src, streamflow_forecast_path, custom_Q):
                     "HYDROID": hydroid,
                     "COMID": comid,
                     "Discharge_cms": q,
-                    "Stage": h,
+                    "Stage_m": h,
                 }
             )
 
