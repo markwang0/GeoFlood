@@ -8,16 +8,35 @@ import sys
 from . import tools as t
 from os import PathLike
 from pathlib import Path
-from rasterio.features import rasterize
+from rasterio.features import rasterize, shapes
 from rasterio.warp import transform_bounds
 
 
 class PyGeoFlood(object):
 
+    @property
+    def dem_path(self) -> str | PathLike:
+        return getattr(self, "_dem_path")
+
+    @dem_path.setter
+    def dem_path(self, value: str | PathLike):
+        # convert to Path object unless None
+        if value is None:
+            setattr(self, "_dem_path", value)
+        else:
+            if isinstance(value, (str, PathLike)):
+                setattr(self, "_dem_path", Path(value))
+                # if a project directory is not provided, it will be set to
+                # directory containing DEM when dem_path is set
+                if self.project_dir is None:
+                    self.project_dir = Path(value).parent
+            else:
+                raise TypeError(
+                    f"dem_path must be a string or os.PathLike object"
+                )
+
     # make these attributes properties with getters and setters
     # t.path_property() ensures attribute is a pathlib.Path object
-    # dem_path and project_dir are not set to None initially
-    dem_path = t.path_property("dem_path")
     project_dir = t.path_property("project_dir")
     # below are set to None initially
     filtered_dem_path = t.path_property("filtered_dem_path")
@@ -49,13 +68,19 @@ class PyGeoFlood(object):
     segmented_channel_network_raster_path = t.path_property(
         "segmented_channel_network_raster_path"
     )
+    segment_catchments_raster_path = t.path_property(
+        "segment_catchments_raster_path"
+    )
+    river_attributes_path = t.path_property("river_attributes_path")
     segment_catchments_path = t.path_property("segment_catchments_path")
-
     catchment_path = t.path_property("catchment_path")
+    src_path = t.path_property("src_path")
+    streamflow_forecast_path = t.path_property("streamflow_forecast_path")
+    flood_stage_path = t.path_property("flood_stage_path")
 
     def __init__(
         self,
-        dem_path,
+        dem_path=None,
         project_dir=None,
         filtered_dem_path=None,
         slope_path=None,
@@ -82,8 +107,13 @@ class PyGeoFlood(object):
         hand_path=None,
         segmented_channel_network_path=None,
         segmented_channel_network_raster_path=None,
+        segment_catchments_raster_path=None,
+        river_attributes_path=None,
         segment_catchments_path=None,
         catchment_path=None,
+        src_path=None,
+        streamflow_forecast_path=None,
+        flood_stage_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -97,14 +127,15 @@ class PyGeoFlood(object):
             DEM. All outputs will be saved to this directory.
         **kwargs : `dict`, optional
         """
-
-        # automatically becomes a pathlib.Path object if not aleady
-        self.dem_path = dem_path
         # if no project_dir is provided, use dir containing DEM
         if project_dir is not None:
             self.project_dir = project_dir
+        elif dem_path is not None:
+            self.project_dir = Path(dem_path).parent
         else:
-            self.project_dir = dem_path.parent
+            self.project_dir = None
+        # automatically becomes a pathlib.Path object if not aleady
+        self.dem_path = dem_path
         self.filtered_dem_path = filtered_dem_path
         self.slope_path = slope_path
         self.curvature_path = curvature_path
@@ -132,23 +163,53 @@ class PyGeoFlood(object):
         self.segmented_channel_network_raster_path = (
             segmented_channel_network_raster_path
         )
+        self.segment_catchments_raster_path = segment_catchments_raster_path
+        self.river_attributes_path = river_attributes_path
         self.segment_catchments_path = segment_catchments_path
-
         self.catchment_path = catchment_path
+        self.src_path = src_path
+        self.streamflow_forecast_path = streamflow_forecast_path
+        self.flood_stage_path = flood_stage_path
 
     # string representation of class
     # output can be used to recreate instance
     def __repr__(self):
-        attrs = "\n    ".join(
-            (
-                f'{k[1:]}="{v}",'
-                if isinstance(v, (str, Path))
-                else f"{k[1:]}={v!r},"
+        if all(val is None for val in self.__dict__.values()):
+            return f"{self.__class__.__name__}()"
+        else:
+            attrs = "\n    ".join(
+                (
+                    f'{k[1:]}="{v}",'
+                    if isinstance(v, (str, Path))
+                    else f"{k[1:]}={v!r},"
+                )
+                for k, v in self.__dict__.items()
+                if v is not None
             )
-            for k, v in self.__dict__.items()
-            if v is not None
-        )
-        return f"{self.__class__.__name__}(\n    {attrs}\n)"
+            return f"{self.__class__.__name__}(\n    {attrs}\n)"
+
+    def to_paths(self, file_path):
+        with open(file_path, "w") as file:
+            for attr, value in vars(self).items():
+                if attr.endswith("_path") and value is not None:
+                    # remove leading "_" if necessary
+                    attr = attr.lstrip("_")
+                    file.write(f'{attr}="{value}"\n')
+
+    @staticmethod
+    def from_paths(file_path):
+        attributes = {}
+        with open(file_path, "r") as file:
+            for line in file:
+                # Assuming the format is exactly 'attribute="value",\n'
+                line = line.strip()  # Remove whitespace and newline characters
+                if line:
+                    attr, value = line.split("=")
+                    # Remove quotation marks
+                    attributes[attr] = value.strip('"')
+        if "project_dir" not in attributes.keys():
+            attributes["project_dir"] = None
+        return PyGeoFlood(**attributes)
 
     @t.time_it
     def apply_nonlinear_filter(
@@ -191,8 +252,8 @@ class PyGeoFlood(object):
         """
 
         # read original DEM
-        dem, dem_profile, pixel_scale = t.read_raster(self.dem_path)
-
+        dem, dem_profile = t.read_raster(self.dem_path)
+        pixel_scale = dem_profile["transform"].a
         edgeThresholdValue = t.lambda_nonlinear_filter(
             dem, pixel_scale, smoothing_quantile
         )
@@ -242,10 +303,12 @@ class PyGeoFlood(object):
         )
 
         # read filtered DEM
-        filtered_dem, filtered_dem_profile, pixel_scale = t.read_raster(
+        filtered_dem, filtered_dem_profile = t.read_raster(
             self.filtered_dem_path
         )
-
+        # pixel scale must be the same in x and y directions
+        # transform.a is in x direction, transform.e is in y direction
+        pixel_scale = filtered_dem_profile["transform"].a
         slope_array = t.compute_dem_slope(filtered_dem, pixel_scale)
 
         # get file path for slope array
@@ -290,10 +353,10 @@ class PyGeoFlood(object):
         )
 
         # read filtered DEM
-        filtered_dem, filtered_dem_profile, pixel_scale = t.read_raster(
+        filtered_dem, filtered_dem_profile = t.read_raster(
             self.filtered_dem_path
         )
-
+        pixel_scale = filtered_dem_profile["transform"].a
         curvature_array = t.compute_dem_curvature(
             filtered_dem,
             pixel_scale,
@@ -456,12 +519,10 @@ class PyGeoFlood(object):
 
         # for some reason WBT assigns D8 values to nodata cells
         # add back nodata cells from filtered DEM
-        filtered_dem, filtered_profile, _ = t.read_raster(
-            self.filtered_dem_path
-        )
+        filtered_dem, filtered_profile = t.read_raster(self.filtered_dem_path)
         filtered_dem[filtered_dem == filtered_profile["nodata"]] = np.nan
         # read D8 flow direction raster
-        d8_fdr, d8_profile, _ = t.read_raster(self.d8_fdr_path)
+        d8_fdr, d8_profile = t.read_raster(self.d8_fdr_path)
         d8_fdr[np.isnan(filtered_dem)] = d8_profile["nodata"]
         # write D8 flow direction raster
         t.write_raster(
@@ -495,7 +556,7 @@ class PyGeoFlood(object):
         )
 
         # read D8 flow direction raster, outlets designated by WBT as 0
-        outlets, profile, _ = t.read_raster(self.d8_fdr_path)
+        outlets, profile = t.read_raster(self.d8_fdr_path)
         nan_mask = outlets == profile["nodata"]
         # get outlets as 1, all else as 0
         # make all cells 1 that are not outlets
@@ -599,7 +660,7 @@ class PyGeoFlood(object):
         t.check_attributes(check_rasters, "define_skeleton")
 
         # get skeleton from curvature only
-        curvature, curvature_profile, _ = t.read_raster(self.curvature_path)
+        curvature, curvature_profile = t.read_raster(self.curvature_path)
         finite_curvature = curvature[np.isfinite(curvature)]
         curvature_mean = np.nanmean(finite_curvature)
         curvature_std = np.nanstd(finite_curvature)
@@ -613,7 +674,7 @@ class PyGeoFlood(object):
         curvature_skeleton = t.get_skeleton(curvature, curvature_threshold)
 
         # get skeleton from flow only
-        mfd_fac, _, _ = t.read_raster(self.mfd_fac_path)
+        mfd_fac, _ = t.read_raster(self.mfd_fac_path)
         mfd_fac[np.isnan(curvature)] = np.nan
         mfd_fac_mean = np.nanmean(mfd_fac)
         print("Mean upstream flow: ", mfd_fac_mean)
@@ -715,17 +776,17 @@ class PyGeoFlood(object):
 
         t.check_attributes(check_rasters, "calculate_geodesic_distance")
 
-        outlets, o_profile, _ = t.read_raster(self.outlets_path)
+        outlets, o_profile = t.read_raster(self.outlets_path)
         outlets = outlets.astype(np.float32)
         outlets[(outlets == 0) | (outlets == o_profile["nodata"])] = np.nan
         outlets = np.transpose(np.argwhere(~np.isnan(outlets)))
-        basins, _, _ = t.read_raster(self.basins_path)
-        curvature, _, _ = t.read_raster(self.curvature_path)
-        mfd_fac, _, _ = t.read_raster(self.mfd_fac_path)
-        filtered_dem, filt_profile, _ = t.read_raster(self.filtered_dem_path)
+        basins, _ = t.read_raster(self.basins_path)
+        curvature, _ = t.read_raster(self.curvature_path)
+        mfd_fac, _ = t.read_raster(self.mfd_fac_path)
+        filtered_dem, filt_profile = t.read_raster(self.filtered_dem_path)
         mfd_fac[np.isnan(filtered_dem)] = np.nan
         del filtered_dem
-        combined_skeleton, _, _ = t.read_raster(self.combined_skeleton_path)
+        combined_skeleton, _ = t.read_raster(self.combined_skeleton_path)
 
         # get start points for Fast Marching Method
         fmm_start_points = t.get_fmm_points(
@@ -833,9 +894,9 @@ class PyGeoFlood(object):
         t.check_attributes(check_rasters, "identify_channel_heads")
 
         # read combined skeleton and geodesic distance rasters
-        combined_skeleton, _, _ = t.read_raster(self.combined_skeleton_path)
+        combined_skeleton, _ = t.read_raster(self.combined_skeleton_path)
 
-        geodesic_distance, geo_profile, _ = t.read_raster(
+        geodesic_distance, geo_profile = t.read_raster(
             self.geodesic_distance_path
         )
 
@@ -932,7 +993,7 @@ class PyGeoFlood(object):
         t.check_attributes(required_files, "calculate_binary_hand")
 
         flowline = gpd.read_file(self.flowline_path)
-        dem, dem_profile, _ = t.read_raster(self.dem_path)
+        dem, dem_profile = t.read_raster(self.dem_path)
         binary_hand = t.get_binary_hand(flowline, dem, dem_profile)
         out_profile = dem_profile.copy()
         out_profile.update(dtype="int16", nodata=-32768)
@@ -1093,16 +1154,16 @@ class PyGeoFlood(object):
         t.check_attributes(required_files, "extract_channel_network")
 
         # read and prepare required rasters
-        mfd_fac, fac_profile, _ = t.read_raster(self.mfd_fac_path)
+        mfd_fac, fac_profile = t.read_raster(self.mfd_fac_path)
         mfd_fac[mfd_fac == fac_profile["nodata"]] = np.nan
         mfd_fac = np.log(mfd_fac)
         mfd_fac = t.minmax_scale(mfd_fac)
 
-        curvature, _, _ = t.read_raster(self.curvature_path)
+        curvature, _ = t.read_raster(self.curvature_path)
         curvature[(curvature < -10) | (curvature > 10)] = np.nan
         curvature = t.minmax_scale(curvature)
 
-        binary_hand, _, _ = t.read_raster(self.binary_hand_path)
+        binary_hand, _ = t.read_raster(self.binary_hand_path)
 
         ### get cost surface array
         # use custom (likely NHD HR) flowline, NHD MR flowlines (binary HAND),
@@ -1117,7 +1178,7 @@ class PyGeoFlood(object):
                 "extract_channel_network with use_custom_flowline=True",
             )
             # int16, 1 channel, 0 not
-            custom_flowline_raster, _, _ = t.read_raster(
+            custom_flowline_raster, _ = t.read_raster(
                 self.custom_flowline_raster_path
             )
             weight_binary_hand = 0.75
@@ -1306,11 +1367,11 @@ class PyGeoFlood(object):
         segment_length : `int` or `float`, optional
             Length of segments. Default is 1000 units.
         """
-
-        t.check_attributes(
-            [("Channel network vector", self.channel_network_path)],
-            "segment_channel_network",
-        )
+        check_files = [
+            ("Channel network vector", self.channel_network_path),
+            ("Catchment vector file", self.catchment_path),
+        ]
+        t.check_attributes(check_files, "segment_channel_network")
 
         channel_network = gpd.read_file(self.channel_network_path)
 
@@ -1399,7 +1460,7 @@ class PyGeoFlood(object):
         )
 
         # get file path for segmented channel network catchments
-        self.segment_catchments_path = t.get_file_path(
+        self.segment_catchments_raster_path = t.get_file_path(
             custom_path=custom_path,
             project_dir=self.project_dir,
             dem_name=self.dem_path.stem,
@@ -1414,10 +1475,167 @@ class PyGeoFlood(object):
         wbt.watershed(
             d8_pntr=self.d8_fdr_path.resolve(),
             pour_pts=self.segmented_channel_network_raster_path.resolve(),
-            output=self.segment_catchments_path.resolve(),
+            output=self.segment_catchments_raster_path.resolve(),
             **wbt_args,
         )
 
         print(
-            f"Segment catchments written to {str(self.segment_catchments_path)}"
+            f"Segment catchments written to {str(self.segment_catchments_raster_path)}"
         )
+
+    @t.time_it
+    def calculate_src(
+        self,
+        custom_path: str | PathLike = None,
+        # write_segment_catchments_features: bool = False,
+        # vector_extension: str = None,
+        # write_river_attributes: bool = False,
+        min_slope: float = 0.000001,
+        max_stage: float = 20,
+        incr_stage: float = 0.1,
+        custom_roughness_path: str | PathLike = None,
+    ):
+        """
+        A shape file of catchments associated with the
+        segmented flowlines and stream segment attributes:
+        feature ID, slope, length, square area.
+        """
+
+        required_files = [
+            ("DEM", self.dem_path),
+            (
+                "Segmented channel network vector",
+                self.segmented_channel_network_path,
+            ),
+            (
+                "Channel network segment catchments",
+                self.segment_catchments_raster_path,
+            ),
+            ("Catchment vector file", self.catchment_path),
+            ("HAND raster", self.hand_path),
+        ]
+
+        t.check_attributes(required_files, "calculate_src")
+
+        segmented_channel_network = gpd.read_file(
+            self.segmented_channel_network_path
+        )
+
+        nwm_catchments = gpd.read_file(self.catchment_path)
+        nwm_catchments = nwm_catchments.to_crs(segmented_channel_network.crs)
+
+        with rio.open(self.dem_path) as ds:
+            msg = "Segmented channel network crs does not match DEM crs"
+            assert ds.crs == segmented_channel_network.crs, msg
+
+        segment_catchments, profile = t.read_raster(
+            self.segment_catchments_raster_path
+        )
+
+        hand, temp_profile = t.read_raster(self.hand_path)
+
+        river_attributes = t.get_river_attributes(
+            self.dem_path,
+            segment_catchments,
+            nwm_catchments,
+            segmented_channel_network,
+            profile,
+            min_slope,
+        )
+
+        # if write_river_attributes:
+        self.river_attributes_path = t.get_file_path(
+            custom_path=None,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="river_attributes",
+            extension="csv",
+        )
+        river_attributes.to_csv(self.river_attributes_path, index=False)
+        print(f"River attributes written to {str(self.river_attributes_path)}")
+
+        # slope raster from unfiltered DEM (*_slope.tif is from filtered DEM)
+        unfilt_dem, _ = t.read_raster(self.dem_path)
+        unfilt_slope = t.compute_dem_slope(
+            unfilt_dem, profile["transform"].a, verbose=False
+        )
+        unfilt_slope = np.nan_to_num(unfilt_slope, nan=0)
+        unfilt_dem = None
+        # default stage heights: 0, 0.1, 0.2, ..., 20
+        heights = np.arange(0, max_stage + incr_stage, incr_stage)
+        cell_area = abs(profile["transform"].a * profile["transform"].e)
+        # add channel geometry attributes to synthetic rating curves
+        src_df = t.catchhydrogeo(
+            hand,
+            segment_catchments,
+            river_attributes[["HYDROID"]].values,
+            unfilt_slope,
+            heights,
+            cell_area,
+            river_attributes,
+            custom_roughness_path,
+        )
+
+        self.src_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="src",
+            extension="csv",
+        )
+
+        src_df.to_csv(self.src_path, index=False)
+        print(f"Synthetic rating curves written to {str(self.src_path)}")
+
+    @t.time_it
+    def calculate_flood_stage(
+        self,
+        custom_path: str | PathLike = None,
+        custom_Q: int | float = None,
+    ):
+        """
+        Calculate flood stage for each segment of the channel network.
+        Forecasted streamflow values for each COMID (feature ID) must be set
+        in `streamflow_forecast_path` before running if custom_Q is not set.
+        If the streamflow forecast is a netCDF file it must be in NWM format
+        (in xarray: 'streamflow' variable with a "feature_id" or "COMID" dim/coord).
+        If the streamflow forecast is a CSV file, it must have columns
+        "feature_id" (or "COMID") and "streamflow".
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save flood stage interpolated from synthetic rating
+            curves. If not provided, flood stage will be saved in project
+            directory.
+        custom_Q : `int` or `float`, optional
+            Constant streamflow value to assign to all segments. Default is None.
+            If set, custom_Q will be used to calculate flood stage instead of
+            forecasted streamflow values.
+        """
+        required_files = [
+            ("Synthetic rating curves", self.src_path),
+            ("Forecast table", self.streamflow_forecast_path),
+        ]
+
+        if custom_Q is None:
+            t.check_attributes(required_files, "calculate_flood_stage")
+        else:
+            t.check_attributes([required_files[0]], "calculate_flood_stage")
+
+        # read synthetic rating curves
+        src = pd.read_csv(self.src_path)
+        src = src[["HYDROID", "Stage", "Volume_m3", "COMID", "Discharge_cms"]]
+
+        out_df = t.get_flood_stage(src, self.streamflow_forecast_path, custom_Q)
+
+        self.flood_stage_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="flood_stage",
+            extension="csv",
+        )
+
+        out_df.to_csv(self.flood_stage_path, index=False)
+        print(f"Forecast table written to {str(self.flood_stage_path)}")

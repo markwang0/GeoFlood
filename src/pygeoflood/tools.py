@@ -7,19 +7,22 @@ import rasterio as rio
 import skfmm
 import sys
 import warnings
+import xarray as xr
 
 from functools import wraps
+from importlib import resources
 from numba import jit, prange
 from os import PathLike
 from pathlib import Path
-from rasterio.features import rasterize
+from rasterio.features import geometry_mask, shapes, rasterize
 from rasterio.transform import rowcol, xy
 from scipy import ndimage
 from scipy.signal import convolve2d
-from scipy.stats.mstats import mquantiles
+from scipy.stats.mstats import gmean, mquantiles
 from skimage.graph import route_through_array
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, shape
 from shapely.ops import linemerge, snap, split
+
 
 # whitebox tools is imported differently depending on whether
 # it was installed with pip or conda-forge
@@ -136,7 +139,7 @@ def check_attributes(
 
 def read_raster(
     file_path: str,
-) -> tuple[np.ndarray, rio.profiles.Profile | dict, float | int]:
+) -> tuple[np.ndarray, rio.profiles.Profile | dict]:
     """
     Read a raster file and return the array, rasterio profile, and pixel scale.
 
@@ -152,17 +155,16 @@ def read_raster(
         Array of raster values.
     profile : `rasterio.profiles.Profile` | `dict`
         Raster profile.
-    pixel_scale : `float` | `int`
-        Pixel scale of raster.
     """
     with rio.open(file_path) as ds:
         raster = ds.read(1)
         profile = ds.profile
-    pixel_scale = profile["transform"][0]
+        msg = "Pixel width must be equal to pixel height"
+        assert abs(ds.transform.a) == abs(ds.transform.e), msg
     # convert nodata to np.nan if dtype is float
     if "float" in profile["dtype"].lower():
         raster[raster == profile["nodata"]] = np.nan
-    return raster, profile, pixel_scale
+    return raster, profile
 
 
 def write_raster(
@@ -398,6 +400,25 @@ def minmax_scale(array: np.ndarray) -> np.ndarray:
         Min-max scaled array.
     """
     return (array - np.nanmin(array)) / (np.nanmax(array) - np.nanmin(array))
+
+
+def df_float64_to_float32(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert float64 columns to float32.
+
+    Parameters
+    ----------
+    df : `pandas.DataFrame`
+        DataFrame to convert.
+
+    Returns
+    -------
+    df : `pandas.DataFrame`
+        DataFrame with float64 columns converted to float32.
+    """
+    for col in df.select_dtypes(include=["float64"]).columns:
+        df[col] = df[col].astype("float32")
+    return df
 
 
 def get_WhiteboxTools(
@@ -644,17 +665,18 @@ def lambda_nonlinear_filter(
 
 
 def compute_dem_slope(
-    filteredDemArray: np.ndarray,
-    pixelDemScale: float,
+    dem: np.ndarray,
+    pixel_scale: float,
+    verbose: bool = True,
 ) -> np.ndarray:
     """
     Compute slope of DEM.
 
     Parameters
     ----------
-    filteredDemArray : `numpy.ndarray`
-        Array of filtered DEM values.
-    pixelDemScale : `float`
+    dem : `numpy.ndarray`
+        DEM on which to calculate slope.
+    pixel_scale : `float`
         Pixel scale of DEM.
 
     Returns
@@ -663,29 +685,22 @@ def compute_dem_slope(
         Array of DEM slope values.
     """
 
-    slopeYArray, slopeXArray = np.gradient(filteredDemArray, pixelDemScale)
+    slopeYArray, slopeXArray = np.gradient(dem, pixel_scale)
     slopeDemArray = np.sqrt(slopeXArray**2 + slopeYArray**2)
-    slopeMagnitudeDemArrayQ = slopeDemArray
-    slopeMagnitudeDemArrayQ = np.reshape(
-        slopeMagnitudeDemArrayQ,
-        np.size(slopeMagnitudeDemArrayQ),
-    )
-    slopeMagnitudeDemArrayQ = slopeMagnitudeDemArrayQ[
-        ~np.isnan(slopeMagnitudeDemArrayQ)
-    ]
-    # Computation of statistics of slope
-    print(" slope statistics")
-    print(
-        " angle min:",
-        np.arctan(np.percentile(slopeMagnitudeDemArrayQ, 0.1)) * 180 / np.pi,
-    )
-    print(
-        " angle max:",
-        np.arctan(np.percentile(slopeMagnitudeDemArrayQ, 99.9)) * 180 / np.pi,
-    )
-    print(" mean slope:", np.nanmean(slopeDemArray))
-    print(" stdev slope:", np.nanstd(slopeDemArray))
-    slopeDemArray[np.isnan(filteredDemArray)] = np.nan
+    if verbose:
+        # Computation of statistics of slope
+        print(" slope statistics")
+        print(
+            " min angle:",
+            np.arctan(np.nanpercentile(slopeDemArray, 0.1)) * 180 / np.pi,
+        )
+        print(
+            " max angle:",
+            np.arctan(np.nanpercentile(slopeDemArray, 99.9)) * 180 / np.pi,
+        )
+        print(" mean slope:", np.nanmean(slopeDemArray))
+        print(" stdev slope:", np.nanstd(slopeDemArray))
+    slopeDemArray[np.isnan(dem)] = np.nan
     return slopeDemArray
 
 
@@ -958,7 +973,9 @@ def get_channel_heads(
     return ch_rows, ch_cols
 
 
-@jit(nopython=True)
+# overhead from parallel=True causes slowdown for
+# small demo dataset. but beneficial for large datasets?
+@jit(nopython=True, parallel=True)
 def jit_channel_heads(
     labeled,
     skeleton_gridded_array,
@@ -969,9 +986,6 @@ def jit_channel_heads(
     channel_head_median_dist,
     max_channel_heads,
 ):
-    """
-    Numba JIT-compiled function for finding channel heads.
-    """
     # pre-allocate array of channel heads
     channel_heads = np.zeros((max_channel_heads, 2), dtype=np.int32)
     ch_count = 0
@@ -1029,7 +1043,7 @@ def get_endpoints(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return endpoints
 
 
-@jit(nopython=True)
+@jit(nopython=True, parallel=True)
 def jit_binary_hand(
     dem: np.ndarray,
     flowline_raster: np.ndarray,
@@ -1356,3 +1370,309 @@ def split_network(
         all_segments.extend(segmented_line)
 
     return all_segments
+
+
+def segment_el_perc_dist(dem_path, geometry, percentage):
+    """
+    Return the elevation at a given percentage distance along a line.
+    """
+    distance = geometry.length * percentage
+    point = geometry.interpolate(distance)
+    with rio.open(dem_path) as ds:
+        z = list(ds.sample([(point.x, point.y)]))[0]
+    return z
+
+
+def slope_10_85(dem_path, geometry):
+    """
+    Calculate the slope between the points at 10% and 85% along
+    the length of a line.
+    """
+    run = 0.75 * geometry.length
+    assert run > 0, "Segment length must be greater than 0"
+    h_85 = segment_el_perc_dist(dem_path, geometry, 0.85)
+    h_10 = segment_el_perc_dist(dem_path, geometry, 0.10)
+    rise = h_85 - h_10
+    return -1 * rise / run
+
+
+def get_river_attributes(
+    dem_path: str | PathLike,
+    segment_catchments: np.ndarray,
+    nwm_catchments: gpd.GeoDataFrame,
+    segments: gpd.GeoDataFrame,
+    profile: rio.profiles.Profile | dict,
+    min_slope: float,
+) -> pd.DataFrame:
+
+    # # calculate area from vectorized catchments
+    # features = list(
+    #     {"properties": {"HYDROID": v}, "geometry": s}
+    #     for (s, v) in shapes(
+    #         segment_catchments,
+    #         connectivity=8,  # avoids isolated single pixel catchments
+    #         transform=profile["transform"],
+    #     )
+    #     if v > 0
+    # )
+    # segment_catchments_vector = gpd.GeoDataFrame.from_features(
+    #     features, crs=segmented_channel_network.crs
+    # )
+    # segment_catchments_vector["AreaSqKm"] = (
+    #     segment_catchments_vector.area / 1e6
+    # )
+    # if write_segment_catchments_features:
+    #     self.segment_catchments_path = t.get_file_path(
+    #         custom_path=None,
+    #         project_dir=self.project_dir,
+    #         dem_name=self.dem_path.stem,
+    #         suffix="segment_catchments",
+    #         extension=vector_extension,
+    #     )
+    #     segment_catchments_vector.to_file(self.segment_catchments_path)
+    #     print(
+    #         f"Segment catchments features written to {str(self.segment_catchments_path)}"
+    #     )
+    # river_attributes_pre = pd.DataFrame(
+    #     segment_catchments_vector.drop(columns="geometry")
+    # )
+
+    # calculate area directly from raster
+    hydroid, counts = np.unique(segment_catchments, return_counts=True)
+    # get area in square kilometers
+    msg = "segment catchments raster crs must have defined linear units"
+    assert profile["crs"].linear_units != "unknown", msg
+    pixel_area = abs(
+        profile["transform"].a
+        * profile["transform"].e
+        * (profile["crs"].linear_units_factor[1] ** 2)
+    )
+    area_sqkm = (counts * pixel_area) / 1e6
+    river_attributes_pre = pd.DataFrame(
+        {"HYDROID": hydroid, "Area_km2": area_sqkm}
+    )
+    river_attributes_pre = river_attributes_pre[
+        river_attributes_pre["HYDROID"] != profile["nodata"]
+    ]
+
+    ra = river_attributes_pre.copy()
+    for _, row in segments.iterrows():
+        slope = slope_10_85(dem_path, row.geometry)
+        if slope < min_slope:
+            print(f"segment HYDROID {row['HYDROID']} has a slope of {slope}")
+            print(f"manually setting slope to {min_slope}")
+            slope = min_slope
+        hydroid = row["HYDROID"]
+        ra.loc[ra["HYDROID"] == hydroid, "Slope"] = slope
+        ra.loc[ra["HYDROID"] == hydroid, "Length_km"] = (
+            row.geometry.length / 1e3
+        )
+    ra = ra.sort_values(by="HYDROID")
+    # set float64 datatypes to float32
+    ra = df_float64_to_float32(ra)
+    # get NWM COMID (catchment ID) corresponding to each HYDROID (segment)
+    segments.geometry = segments.centroid
+    # join COMID to HYDROID if HYDROID centroid is within COMID
+    joined_comid = gpd.sjoin(
+        segments,
+        nwm_catchments,
+        how="left",
+        predicate="within",
+    )
+    joined_comid = joined_comid[["HYDROID", "FEATUREID"]]
+    joined_comid = joined_comid.rename(columns={"FEATUREID": "COMID"})
+    # join COMID to river attributes
+    ra = pd.merge(
+        ra,
+        joined_comid,
+        on="HYDROID",
+        how="left",
+    )
+
+    return ra
+
+
+@jit(nopython=True, parallel=True)
+def process_cells(
+    hand,
+    segment_catchments,
+    slope,
+    hid_dict_array,
+    heights,
+    cell_area,
+):
+    nheight = len(heights)
+    ncatch = len(hid_dict_array[:, 0])
+    CellCount = np.zeros((nheight, ncatch), dtype=np.int32)
+    SurfaceArea = np.zeros((nheight, ncatch), dtype=np.float32)
+    BedArea = np.zeros((nheight, ncatch), dtype=np.float32)
+    Volume = np.zeros((nheight, ncatch), dtype=np.float32)
+
+    # loop through each row i, col j
+    for i in range(hand.shape[0]):
+        for j in range(hand.shape[1]):
+            hydroid = segment_catchments[i, j]
+            hydroid_index = np.searchsorted(hid_dict_array[:, 0], hydroid)
+            hand_height = hand[i, j]
+            slp_value = slope[i, j]
+            for h_idx in range(nheight):
+                if hand_height < heights[h_idx] or np.isclose(hand_height, 0.0):
+                    CellCount[h_idx, hydroid_index] += 1
+                    SurfaceArea[h_idx, hydroid_index] += cell_area
+                    incBedArea = cell_area * np.sqrt(1 + slp_value**2)
+                    BedArea[h_idx, hydroid_index] += incBedArea
+                    incVolume = (heights[h_idx] - hand_height) * cell_area
+                    Volume[h_idx, hydroid_index] += incVolume
+    return CellCount, SurfaceArea, BedArea, Volume
+
+
+def catchhydrogeo(
+    hand,
+    segment_catchments,
+    hydroids,
+    slope,
+    heights,
+    cell_area,
+    ra,
+    custom_roughness_path,
+):
+
+    hid_dict = {int(item[0]): idx for idx, item in enumerate(hydroids)}
+    hid_dict_array = np.array(list(hid_dict.items()), dtype=np.int32)
+    CellCount, SurfaceArea, BedArea, Volume = process_cells(
+        hand,
+        segment_catchments,
+        slope,
+        hid_dict_array,
+        heights,
+        cell_area,
+    )
+    # prepare data for DataFrame
+    data = []
+    for i in range(len(hydroids)):
+        hydroid = int(hydroids[i])
+        for h_idx in range(len(heights)):
+            row = {
+                "HYDROID": hydroid,
+                "Stage": round(heights[h_idx], 4),
+                "NumCells": CellCount[h_idx, i],
+                "SurfaceArea_m2": SurfaceArea[h_idx, i],
+                "BedArea_m2": BedArea[h_idx, i],
+                "Volume_m3": Volume[h_idx, i],
+            }
+            data.append(row)
+
+    # Create DataFrame
+    src_df = pd.DataFrame(data)
+    src_df["NumCells"] = src_df["NumCells"].astype(int)
+
+    # join river attributes on HYDROID
+    src_df = pd.merge(src_df, ra, on="HYDROID", how="left")
+    # join Manning's roughness on COMID
+    if custom_roughness_path is not None:
+        roughness = pd.read_csv(custom_roughness_path)
+    else:
+        with resources.path("pygeoflood.data", "COMID_Roughness.csv") as f:
+            roughness = pd.read_csv(f)
+    src_df = pd.merge(src_df, roughness, on="COMID", how="left")
+    src_df["TopWidth_m"] = src_df["SurfaceArea_m2"] / src_df["Length_km"] / 1e3
+    src_df["WettedPerimeter_m"] = (
+        src_df["BedArea_m2"] / src_df["Length_km"] / 1e3
+    )
+    src_df["WetArea_m2"] = src_df["Volume_m3"] / src_df["Length_km"] / 1e3
+    src_df["HydraulicRadius_m"] = (
+        src_df["WetArea_m2"] / src_df["WettedPerimeter_m"]
+    )
+    src_df["HydraulicRadius_m"] = src_df["HydraulicRadius_m"].fillna(0)
+    src_df["Discharge_cms"] = (
+        src_df["WetArea_m2"]
+        * np.power(src_df["HydraulicRadius_m"], 2 / 3)
+        * np.sqrt(src_df["Slope"])
+        / src_df["Roughness"]
+    )
+    src_df["FloodAreaRatio"] = (
+        src_df["SurfaceArea_m2"] / src_df["Area_km2"] / 1e6
+    )
+
+    msg = "Empty DataFrame, check river attributes and make sure COMID is in COMID_Roughness csv"
+    assert src_df["Discharge_cms"].isna().sum() != len(src_df), msg
+
+    # set float64 datatypes to float32
+    src_df = df_float64_to_float32(src_df)
+
+    return src_df
+
+
+def get_flood_stage(src, streamflow_forecast_path, custom_Q):
+    # open forecast table with xarray or pandas
+    if custom_Q is not None and streamflow_forecast_path is not None:
+        if streamflow_forecast_path.suffix in [".nc", ".comp"]:
+            with xr.open_dataset(streamflow_forecast_path) as ds:
+                reqd_cols_provided = "streamflow" in ds.variables and (
+                    "COMID" in ds.variables or "feature_id" in ds.variables
+                )
+                if reqd_cols_provided:
+                    if "COMID" in ds.variables:
+                        comid = "COMID"
+                    else:
+                        comid = "feature_id"
+                    df = ds.streamflow[
+                        ds[comid].isin(src["COMID"].unique())
+                    ].to_dataframe()
+                    # keep only Discharge_cms and COMID columns
+                    df["COMID"] = df.index
+                    df = df.reset_index(drop=True)
+                    df = df.rename(columns={"streamflow": "Discharge_cms"})
+                    df = df[["COMID", "Discharge_cms"]]
+                else:
+                    raise ValueError(
+                        "NetCDF file must have COMID (or feature_id) and streamflow variables"
+                    )
+        elif streamflow_forecast_path.suffix == ".csv":
+            df = pd.read_csv(streamflow_forecast_path)
+            reqd_cols_provided = "streamflow" in df.columns and (
+                "COMID" in df.columns or "feature_id" in df.columns
+            )
+            if reqd_cols_provided:
+                if "COMID" in df.columns:
+                    comid = "COMID"
+                else:
+                    comid = "feature_id"
+
+                # filter forecast table to only COMIDS of interest
+                df = df[df[comid].isin(src["COMID"].unique())]
+                # keep only streamflow and COMID columns
+                df = df.rename(
+                    columns={comid: "COMID", "streamflow": "Discharge_cms"}
+                )
+                df = df[["COMID", "Discharge_cms"]]
+            else:
+                raise ValueError(
+                    "CSV file must have COMID (or feature_id) and streamflow column headers"
+                )
+    else:
+        df = pd.DataFrame()
+        df["COMID"] = src["COMID"].unique()
+    data = []
+    for comid in df["COMID"]:
+        # assign constant streamflow to all segments if custom_Q is provided
+        if custom_Q is not None:
+            q = custom_Q
+        else:
+            q = df[df["COMID"] == comid]["Discharge_cms"].values[0]
+        for hydroid in src["HYDROID"].unique():
+            q_lookup = src.loc[src["HYDROID"] == hydroid]["Discharge_cms"]
+            h_lookup = src.loc[src["HYDROID"] == hydroid]["Stage"]
+            # if q is less than q_lookup[0] h = 0
+            # if q is greater than q_lookup[-1] h = -9999
+            h = np.interp(q, q_lookup, h_lookup, left=0, right=-9999)
+            data.append(
+                {
+                    "HYDROID": hydroid,
+                    "COMID": comid,
+                    "Discharge_cms": q,
+                    "Stage": h,
+                }
+            )
+
+    return df_float64_to_float32(pd.DataFrame(data))

@@ -38,9 +38,13 @@ dependencies = [
     "six",
     "statsmodels",
     "whitebox",
+    "xarray",
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/passaH2O/GeoFlood"
 "Repository" = "https://github.com/passaH2O/GeoFlood"
 "Bug Tracker" = "https://github.com/passaH2O/GeoFlood/issues"
+
+[tool.setuptools]
+package-data = { "pygeoflood" = ["data/COMID_Roughness.csv"] }
