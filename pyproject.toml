@@ -9,6 +9,7 @@ authors = [
     { name = "Paola Passalacqua", email = "paola@austin.utexas.edu" },
     { name = "Xing Zheng", email = "zhengxingwhu@gmail.com" },
     { name = "Alec Carruthers", email = "author@example.com" },
+    { name = "Mark Wang", email = "mark.wang@utexas.edu" },
 ]
 maintainers = [
     { name = "Mark Wang", email = "mark.wang@utexas.edu" },
@@ -27,16 +28,13 @@ dependencies = [
     "geopandas",
     "ipykernel",
     "matplotlib",
-    "netCDF4",
     "numba",
     "numpy",
     "pandas",
-    "proj",
     "rasterio",
     "scikit-fmm",
+    "scikit-image",
     "scipy",
-    "six",
-    "statsmodels",
     "whitebox",
     "xarray",
 ]
