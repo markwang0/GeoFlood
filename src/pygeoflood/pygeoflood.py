@@ -77,6 +77,7 @@ class PyGeoFlood(object):
     src_path = t.path_property("src_path")
     streamflow_forecast_path = t.path_property("streamflow_forecast_path")
     flood_stage_path = t.path_property("flood_stage_path")
+    fim_path = t.path_property("fim_path")
 
     def __init__(
         self,
@@ -114,6 +115,7 @@ class PyGeoFlood(object):
         src_path=None,
         streamflow_forecast_path=None,
         flood_stage_path=None,
+        fim_path=None,
     ):
         """
         Create a new pygeoflood model instance.
@@ -170,6 +172,7 @@ class PyGeoFlood(object):
         self.src_path = src_path
         self.streamflow_forecast_path = streamflow_forecast_path
         self.flood_stage_path = flood_stage_path
+        self.fim_path = fim_path
 
     # string representation of class
     # output can be used to recreate instance
@@ -195,6 +198,7 @@ class PyGeoFlood(object):
                     # remove leading "_" if necessary
                     attr = attr.lstrip("_")
                     file.write(f'{attr}="{value}"\n')
+        print(f"Paths written to {file_path}")
 
     @staticmethod
     def from_paths(file_path):
@@ -1501,9 +1505,38 @@ class PyGeoFlood(object):
         custom_roughness_path: str | PathLike = None,
     ):
         """
-        A shape file of catchments associated with the
-        segmented flowlines and stream segment attributes:
-        feature ID, slope, length, square area.
+        Calculate synthetic rating curves (SRC) for each segment of the channel
+        network. The SRC are based on the channel geometry attributes and the
+        stage-height relationship. The SRC are written to a csv file.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save synthetic rating curves. If not provided, SRC
+            will be saved in project directory.
+        min_slope : `float`, optional
+            Minimum slope allowed on channel segments. Default is 0.000001.
+        max_stage : `float`, optional
+            Maximum stage height in SRC. Default is 20.
+        incr_stage : `float`, optional
+            Increment with which to calculate SRC, from 0 to max_stage.
+            Default is 0.1.
+        custom_roughness_path : `str`, `os.PathLike`, optional
+            Custom path to a csv file with roughness, a.k.a. Manning's n values
+            for each COMID in the study area. Must have columns "COMID" and
+            "Roughness". If not provided, default Manning's n values, which
+            have been determined for each COMID in CONUS, will be used. These
+            default roughness values are determined from stream order:
+
+            stream order | roughness
+            ------------ | ---------
+            1            | 0.200
+            2            | 0.100
+            3            | 0.065
+            4            | 0.045
+            5            | 0.030
+            6            | 0.010
+            7            | 0.025
         """
 
         required_files = [
@@ -1537,7 +1570,7 @@ class PyGeoFlood(object):
             self.segment_catchments_raster_path
         )
 
-        hand, temp_profile = t.read_raster(self.hand_path)
+        hand, _ = t.read_raster(self.hand_path)
 
         river_attributes = t.get_river_attributes(
             self.dem_path,
@@ -1648,3 +1681,52 @@ class PyGeoFlood(object):
 
         out_df.to_csv(self.flood_stage_path, index=False)
         print(f"Flood stages written to {str(self.flood_stage_path)}")
+
+    @t.time_it
+    def inundate(
+        self,
+        custom_path: str | PathLike = None,
+    ):
+        """
+        Calculate flood inundation raster based on HAND and flood stage.
+
+        Parameters
+        ---------
+        custom_path : `str`, `os.PathLike`, optional
+            Custom path to save flood inundation raster. If not provided, flood
+            inundation raster will be saved in project directory.
+        """
+        required_files = [
+            ("HAND raster", self.hand_path),
+            ("Flood stages", self.flood_stage_path),
+            ("Segment catchments", self.segment_catchments_raster_path),
+        ]
+
+        t.check_attributes(required_files, "inundate")
+
+        hand, profile = t.read_raster(self.hand_path)
+        seg_catch, _ = t.read_raster(self.segment_catchments_raster_path)
+        df = pd.read_csv(self.flood_stage_path)
+        df=df.sort_values(by="HYDROID")
+        hydroids = df["HYDROID"].to_numpy()
+        stage_m = df["Stage_m"].to_numpy()
+
+        inundated = t.jit_inun(hand, seg_catch, hydroids, stage_m)
+
+        self.fim_path = t.get_file_path(
+            custom_path=custom_path,
+            project_dir=self.project_dir,
+            dem_name=self.dem_path.stem,
+            suffix="fim",
+        )
+
+        out_profile = profile.copy()
+        out_profile.update(dtype="float32")
+
+        t.write_raster(
+            raster=inundated,
+            profile=out_profile,
+            file_path=self.fim_path,
+        )
+
+        print(f"Flood inundation raster written to {str(self.fim_path)}")

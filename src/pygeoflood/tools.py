@@ -973,8 +973,6 @@ def get_channel_heads(
     return ch_rows, ch_cols
 
 
-# overhead from parallel=True causes slowdown for
-# small demo dataset. but beneficial for large datasets?
 @jit(nopython=True, parallel=True)
 def jit_channel_heads(
     labeled,
@@ -990,8 +988,8 @@ def jit_channel_heads(
     channel_heads = np.zeros((max_channel_heads, 2), dtype=np.int32)
     ch_count = 0
 
-    for i in range(nrows):
-        for j in range(ncols):
+    for i in prange(nrows):
+        for j in prange(ncols):
             if (
                 labeled[i, j] != 0
                 and skeleton_gridded_array[i, j] >= count_threshold
@@ -1065,8 +1063,8 @@ def jit_binary_hand(
     distanceArray = np.where(flowline_raster == 1, 0, np.inf)
     allocationArray = np.where(flowline_raster == 1, dem, np.inf)
 
-    for row in range(distanceArray.shape[0]):
-        for col in range(distanceArray.shape[1]):
+    for row in prange(distanceArray.shape[0]):
+        for col in prange(distanceArray.shape[1]):
             z = distanceArray[row, col]
             if z != 0:
                 z_min = np.inf
@@ -1509,8 +1507,8 @@ def process_cells(
     Volume = np.zeros((nheight, ncatch), dtype=np.float32)
 
     # loop through each row i, col j
-    for i in range(hand.shape[0]):
-        for j in range(hand.shape[1]):
+    for i in prange(hand.shape[0]):
+        for j in prange(hand.shape[1]):
             hydroid = segment_catchments[i, j]
             hydroid_index = np.searchsorted(hid_dict_array[:, 0], hydroid)
             hand_height = hand[i, j]
@@ -1615,9 +1613,7 @@ def get_flood_stage(src, streamflow_forecast_path, custom_Q):
                 )
                 if reqd_cols_provided:
                     comid = "COMID" if "COMID" in ds.variables else "feature_id"
-                    df = ds.streamflow[
-                        ds[comid].isin(comids)
-                    ].to_dataframe()
+                    df = ds.streamflow[ds[comid].isin(comids)].to_dataframe()
                     # keep only Discharge_cms and COMID columns
                     df["COMID"] = df.index
                     df = df.reset_index(drop=True)
@@ -1668,3 +1664,43 @@ def get_flood_stage(src, streamflow_forecast_path, custom_Q):
             )
 
     return df_float64_to_float32(pd.DataFrame(data))
+
+
+@jit(nopython=True)
+def binary_search(arr, x):
+    """
+    Perform binary search of sorted array arr for x.
+    Return the index of x in arr if present, else -1.
+    """
+    low = 0
+    high = arr.size - 1
+
+    while low <= high:
+        mid = (low + high) // 2
+        mid_val = arr[mid]
+
+        if mid_val < x:
+            low = mid + 1
+        elif mid_val > x:
+            high = mid - 1
+        else:
+            return mid  # x is found
+    return -1  # x is not found
+
+
+@jit(nopython=True, parallel=True)
+def jit_inun(hand, seg_catch, hydroids, stage_m):
+    inun = np.empty_like(hand, dtype=np.float32)
+    inun.fill(np.nan)
+    for i in prange(hand.shape[0]):
+        for j in prange(hand.shape[1]):
+            hydroid = seg_catch[i, j]
+            hand_h = hand[i, j]
+            hydroid_idx = binary_search(hydroids, hydroid)
+            if hydroid_idx != -1:
+                h = stage_m[hydroid_idx]
+            else:
+                h = -9999
+            if h > hand_h:
+                inun[i, j] = h - hand_h
+    return inun
