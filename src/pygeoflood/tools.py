@@ -1,11 +1,12 @@
 import geopandas as gpd
+import inspect
 import numpy as np
-import psutil
-import time
 import pandas as pd
+import psutil
 import rasterio as rio
 import skfmm
 import sys
+import time
 import warnings
 import xarray as xr
 
@@ -19,9 +20,9 @@ from rasterio.transform import rowcol, xy
 from scipy import ndimage
 from scipy.signal import convolve2d
 from scipy.stats.mstats import gmean, mquantiles
-from skimage.graph import route_through_array
 from shapely.geometry import LineString, Point, shape
 from shapely.ops import linemerge, snap, split
+from skimage.graph import route_through_array
 
 
 # whitebox tools is imported differently depending on whether
@@ -103,21 +104,71 @@ def time_it(func: callable) -> callable:
     @wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()
-        result = func(*args, **kwargs)
+        method_name = func.__name__
+        result = func(*args, method_name=method_name, **kwargs)
         end_time = time.time()
         duration = end_time - start_time
 
         # Check if duration is over 60 minutes (3600 seconds)
         if duration > 3600:
-            print(f"\n{func.__name__} completed in {duration / 3600:.4f} hours")
+            print(f"{func.__name__} completed in {duration / 3600:.4f} hours\n")
         # Check if duration is over 60 seconds
         elif duration > 60:
-            print(f"\n{func.__name__} completed in {duration / 60:.4f} minutes")
+            print(f"{func.__name__} completed in {duration / 60:.4f} minutes\n")
         else:
-            print(f"\n{func.__name__} completed in {duration:.4f} seconds")
+            print(f"{func.__name__} completed in {duration:.4f} seconds\n")
         return result
 
     return wrapper
+
+# sets parameters method will use. precedence:
+# 1. explicitly passed arguments
+# 2. configuration values
+# 3. default values in the function signature
+def use_config_defaults(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        # Get the signature of the function
+        sig = inspect.signature(func)
+
+        # Prepare to collect explicitly passed arguments
+        explicitly_passed_args = set(kwargs.keys())
+        params = sig.parameters
+        arg_names = list(params.keys())[1:]  # Skip 'self'
+        
+        # Determine which positional args were explicitly passed
+        for i, arg in enumerate(args):
+            if i < len(arg_names):
+                explicitly_passed_args.add(arg_names[i])
+
+        # Start by applying the default values
+        final_params = {k: v.default for k, v in params.items() if v.default is not inspect.Parameter.empty}
+
+        # Update with configuration values, if available
+        method_name = func.__name__
+        if hasattr(self, 'config') and self.config:
+            config_options = self.config.get_method_options(method_name)
+            final_params.update(config_options)
+
+        # Override with explicitly passed arguments
+        bound_args = sig.bind_partial(self, *args, **kwargs)
+        bound_args.apply_defaults()
+        explicitly_passed_args_values = {k: bound_args.arguments[k] for k in explicitly_passed_args if k != 'self'}
+        final_params.update(explicitly_passed_args_values)
+
+        # Print the parameters being used
+        print(f'Running {method_name} with parameters:')
+        del final_params['method_name']
+        for key, val in final_params.items():
+            print(f'    {key} = {val}')
+
+        # Execute the function with the final parameters
+        return func(self, **final_params)
+    return wrapper
+
+
+
+
 
 
 def check_attributes(
@@ -1703,4 +1754,16 @@ def jit_inun(hand, seg_catch, hydroids, stage_m):
                 h = -9999
             if h > hand_h:
                 inun[i, j] = h - hand_h
+    return inun
+
+
+def get_inun(hand, seg_catch, df):
+    # map HYDROID to Stage_m for each HYDROID in seg_catch raster
+    catch_h_mapped = (
+        pd.Series(seg_catch.flatten())
+        .map(df.set_index("HYDROID")["Stage_m"])
+        .to_numpy()
+        .reshape(seg_catch.shape)
+    )
+    inun = np.where(catch_h_mapped > hand, catch_h_mapped - hand, np.nan)
     return inun
