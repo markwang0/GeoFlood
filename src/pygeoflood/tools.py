@@ -105,7 +105,7 @@ def time_it(func: callable) -> callable:
     def wrapper(*args, **kwargs):
         start_time = time.time()
         method_name = func.__name__
-        result = func(*args, method_name=method_name, **kwargs)
+        result = func(*args, **kwargs)
         end_time = time.time()
         duration = end_time - start_time
 
@@ -158,7 +158,6 @@ def use_config_defaults(func):
 
         # Print the parameters being used
         print(f'Running {method_name} with parameters:')
-        del final_params['method_name']
         for key, val in final_params.items():
             print(f'    {key} = {val}')
 

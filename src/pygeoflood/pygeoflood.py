@@ -261,16 +261,13 @@ class PyGeoFlood(object):
         time_increment: float = 0.1,
         n_iter: int = 50,
         sigma_squared: float = 0.05,
-        method_name=None,
     ):
         """
-        Apply nonlinear filter to DEM.
+        Apply nonlinear filter to DEM. The dem_path attribute must be set before
+        calling this method.
 
         Parameters
-        ---------
-        dem_path : `str`, `os.PathLike`, optional
-            Path to DEM in GeoTIFF format. If not provided, DEM path provided
-            when creating the PyGeoFlood instance will be used.
+        ----------
         custom_path : `str`, `os.PathLike`, optional
             Custom path to save filtered DEM. If not provided, filtered DEM
             will be saved in project directory.
@@ -294,7 +291,7 @@ class PyGeoFlood(object):
         """
 
         t.check_attributes(
-            [("PyGeoFlood.dem_path", self.dem_path)], method_name
+            [("PyGeoFlood.dem_path", self.dem_path)], "apply_nonlinear_filter"
         )
 
         # read original DEM
@@ -334,7 +331,6 @@ class PyGeoFlood(object):
     def calculate_slope(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
     ):
         """
         Calculate slope of DEM.
@@ -347,7 +343,7 @@ class PyGeoFlood(object):
         """
 
         t.check_attributes(
-            [("Filtered DEM", self.filtered_dem_path)], method_name
+            [("Filtered DEM", self.filtered_dem_path)], "calculate_slope"
         )
 
         # read filtered DEM
@@ -381,7 +377,6 @@ class PyGeoFlood(object):
         self,
         custom_path: str | PathLike = None,
         method: str = "geometric",
-        method_name=None,
     ):
         """
         Calculate curvature of DEM.
@@ -399,7 +394,7 @@ class PyGeoFlood(object):
         """
 
         t.check_attributes(
-            [("Filtered DEM", self.filtered_dem_path)], method_name
+            [("Filtered DEM", self.filtered_dem_path)], "calculate_curvature"
         )
 
         # read filtered DEM
@@ -434,7 +429,6 @@ class PyGeoFlood(object):
     def fill_depressions(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
         **wbt_args,
     ):
         """
@@ -452,7 +446,7 @@ class PyGeoFlood(object):
         """
 
         t.check_attributes(
-            [("Filtered DEM", self.filtered_dem_path)], method_name
+            [("Filtered DEM", self.filtered_dem_path)], "fill_depressions"
         )
 
         # get file path for filled DEM
@@ -482,7 +476,6 @@ class PyGeoFlood(object):
     def calculate_mfd_flow_accumulation(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
         **wbt_args,
     ):
         """
@@ -501,7 +494,7 @@ class PyGeoFlood(object):
 
         t.check_attributes(
             [("Filled DEM", self.filled_path)],
-            method_name,
+            "calculate_mfd_flow_accumulation",
         )
 
         # get file path for MFD flow accumulation
@@ -533,7 +526,6 @@ class PyGeoFlood(object):
     def calculate_d8_flow_direction(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
         **wbt_args,
     ):
         """
@@ -550,7 +542,7 @@ class PyGeoFlood(object):
             function. See WhiteboxTools documentation for details.
         """
 
-        t.check_attributes([("Filled DEM", self.filled_path)], method_name)
+        t.check_attributes([("Filled DEM", self.filled_path)], "calculate_d8_flow_direction")
 
         # get file path for D8 flow direction
         self.d8_fdr_path = t.get_file_path(
@@ -592,7 +584,6 @@ class PyGeoFlood(object):
     def find_outlets(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
     ):
         """
         Create outlets raster. Outlets are cells which have no downslope neighbors
@@ -608,7 +599,7 @@ class PyGeoFlood(object):
 
         t.check_attributes(
             [("D8 flow direction raster", self.d8_fdr_path)],
-            method_name,
+            "find_outlets",
         )
 
         # read D8 flow direction raster, outlets designated by WBT as 0
@@ -644,7 +635,6 @@ class PyGeoFlood(object):
     def delineate_basins(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
         **wbt_args,
     ):
         """
@@ -662,7 +652,7 @@ class PyGeoFlood(object):
 
         t.check_attributes(
             [("D8 flow direction raster", self.d8_fdr_path)],
-            method_name,
+            "delineate_basins",
         )
 
         # get file path for basins
@@ -694,7 +684,6 @@ class PyGeoFlood(object):
         fac_threshold: float = 3000,
         write_flow_skeleton: bool = False,
         write_curvature_skeleton: bool = False,
-        method_name=None,
     ):
         """
         Define skeleton from flow and curvature.
@@ -717,7 +706,7 @@ class PyGeoFlood(object):
             ("Flow accumulation raster", self.mfd_fac_path),
         ]
 
-        t.check_attributes(check_rasters, method_name)
+        t.check_attributes(check_rasters, "define_skeleton")
 
         # get skeleton from curvature only
         curvature, curvature_profile = t.read_raster(self.curvature_path)
@@ -806,7 +795,6 @@ class PyGeoFlood(object):
         area_threshold: float = 0.1,
         normalize_curvature: bool = True,
         local_cost_min: float | None = None,
-        method_name=None,
     ):
         """
         Calculate geodesic distance.
@@ -836,7 +824,7 @@ class PyGeoFlood(object):
             ("Combined skeleton raster", self.combined_skeleton_path),
         ]
 
-        t.check_attributes(check_rasters, method_name)
+        t.check_attributes(check_rasters, "calculate_geodesic_distance")
 
         outlets, o_profile = t.read_raster(self.outlets_path)
         outlets = outlets.astype(np.float32)
@@ -930,7 +918,6 @@ class PyGeoFlood(object):
         channel_head_median_dist: int = 30,
         vector_extension: str = "shp",
         max_channel_heads: int = 10000,
-        method_name=None,
     ):
         """
         Define channel heads.
@@ -955,7 +942,7 @@ class PyGeoFlood(object):
             ("Geodesic distance raster", self.geodesic_distance_path),
         ]
 
-        t.check_attributes(check_rasters, method_name)
+        t.check_attributes(check_rasters, "identify_channel_heads")
 
         # read combined skeleton and geodesic distance rasters
         combined_skeleton, _ = t.read_raster(self.combined_skeleton_path)
@@ -999,7 +986,6 @@ class PyGeoFlood(object):
     def find_endpoints(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
     ):
         """
         Save flowline endpoints in a csv file.
@@ -1013,7 +999,7 @@ class PyGeoFlood(object):
 
         t.check_attributes(
             [("PyGeoFlood.flowline_path", self.flowline_path)],
-            method_name,
+            "find_endpoints",
         )
 
         flowline = gpd.read_file(self.flowline_path)
@@ -1038,7 +1024,6 @@ class PyGeoFlood(object):
     def calculate_binary_hand(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
     ):
         """
         Creates binary HAND raster with values of 1 given to pixels at a lower
@@ -1058,7 +1043,7 @@ class PyGeoFlood(object):
             ("PyGeoFlood.flowline_path", self.flowline_path),
         ]
 
-        t.check_attributes(required_files, method_name)
+        t.check_attributes(required_files, "calculate_binary_hand")
 
         flowline = gpd.read_file(self.flowline_path)
         dem, dem_profile = t.read_raster(self.dem_path)
@@ -1091,7 +1076,6 @@ class PyGeoFlood(object):
         self,
         custom_path: str | PathLike = None,
         layer: str | int = 0,
-        method_name=None,
     ):
         """
         Create custom flowline raster from user-provided flowline vector file.
@@ -1114,7 +1098,7 @@ class PyGeoFlood(object):
 
         t.check_attributes(
             [("PyGeoFlood.custom_flowline_path", self.custom_flowline_path)],
-            method_name,
+            "rasterize_custom_flowline",
         )
 
         # get bounding box and crs from DEM to clip flowline
@@ -1177,7 +1161,6 @@ class PyGeoFlood(object):
         custom_weight_mfd_fac: float | None = None,
         custom_weight_binary_hand: float | None = None,
         custom_weight_custom_flowline: float | None = None,
-        method_name=None,
     ):
         """
         Extract channel network. The channel network will be written to raster
@@ -1224,7 +1207,7 @@ class PyGeoFlood(object):
             ("Endpoints csv", self.endpoints_path),
         ]
 
-        t.check_attributes(required_files, method_name)
+        t.check_attributes(required_files, "extract_channel_network")
 
         # read and prepare required rasters
         mfd_fac, fac_profile = t.read_raster(self.mfd_fac_path)
@@ -1374,7 +1357,6 @@ class PyGeoFlood(object):
     def calculate_hand(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
         **wbt_args,
     ):
         """
@@ -1398,7 +1380,7 @@ class PyGeoFlood(object):
             ("Filled DEM", self.filled_path),
             ("Channel network raster", self.channel_network_raster_path),
         ]
-        t.check_attributes(required_rasters, method_name)
+        t.check_attributes(required_rasters, "calculate_hand")
 
         # get file path for HAND
         self.hand_path = t.get_file_path(
@@ -1429,7 +1411,6 @@ class PyGeoFlood(object):
         custom_path: str | PathLike = None,
         vector_extension: str = "shp",
         segment_length: int | float = 1000,
-        method_name=None,
     ):
         """
         Divide channel network into segments of a specified length.
@@ -1448,7 +1429,7 @@ class PyGeoFlood(object):
             ("Channel network vector", self.channel_network_path),
             ("PyGeoFlood.catchment_path", self.catchment_path),
         ]
-        t.check_attributes(check_files, method_name)
+        t.check_attributes(check_files, "segment_channel_network")
 
         channel_network = gpd.read_file(self.channel_network_path)
 
@@ -1483,7 +1464,6 @@ class PyGeoFlood(object):
     def delineate_segment_catchments(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
         **wbt_args,
     ):
         """
@@ -1507,7 +1487,7 @@ class PyGeoFlood(object):
             ),
             ("D8 flow direction raster", self.d8_fdr_path),
         ]
-        t.check_attributes(required_files, method_name)
+        t.check_attributes(required_files, "delineate_segment_catchments")
 
         # rasterize segmented channel network to use in wbt.watershed()
         with rio.open(self.d8_fdr_path) as ds:
@@ -1574,7 +1554,6 @@ class PyGeoFlood(object):
         max_stage: float = 20,
         incr_stage: float = 0.1,
         custom_roughness_path: str | PathLike = None,
-        method_name=None,
     ):
         """
         Calculate synthetic rating curves (SRC) for each segment of the channel
@@ -1625,7 +1604,7 @@ class PyGeoFlood(object):
             ("HAND raster", self.hand_path),
         ]
 
-        t.check_attributes(required_files, method_name)
+        t.check_attributes(required_files, "calculate_src")
 
         segmented_channel_network = gpd.read_file(
             self.segmented_channel_network_path
@@ -1703,7 +1682,6 @@ class PyGeoFlood(object):
         self,
         custom_path: str | PathLike = None,
         custom_Q: int | float = None,
-        method_name=None,
     ):
         """
         Calculate flood stage for each segment of the channel network.
@@ -1734,10 +1712,10 @@ class PyGeoFlood(object):
         ]
 
         if custom_Q is None:
-            t.check_attributes(required_files, method_name)
+            t.check_attributes(required_files, "calculate_flood_stage")
         else:
             print(f"Applying custom streamflow to each segment: {custom_Q} cms")
-            t.check_attributes([required_files[0]], method_name)
+            t.check_attributes([required_files[0]], "calculate_flood_stage")
 
         # read synthetic rating curves
         src = pd.read_csv(self.src_path)
@@ -1761,7 +1739,6 @@ class PyGeoFlood(object):
     def inundate(
         self,
         custom_path: str | PathLike = None,
-        method_name=None,
     ):
         """
         Calculate flood inundation raster based on HAND and flood stage.
@@ -1778,7 +1755,7 @@ class PyGeoFlood(object):
             ("Segment catchments", self.segment_catchments_raster_path),
         ]
 
-        t.check_attributes(required_files, method_name)
+        t.check_attributes(required_files, "inundate")
 
         hand, profile = t.read_raster(self.hand_path)
         seg_catch, _ = t.read_raster(self.segment_catchments_raster_path)
@@ -1808,7 +1785,7 @@ class PyGeoFlood(object):
         print(f"Flood inundation raster written to {str(self.fim_path)}")
 
     @t.time_it
-    def run_fim_workflow(self, method_name=None):
+    def run_fim_workflow(self):
         """
         Run the full PyGeoFlood workflow.
         """
