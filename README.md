@@ -25,6 +25,16 @@ $ conda activate pygeoflood-env
 (pygeoflood-env) $ pip install git+https://github.com/markwang0/geoflood
 ```
 
+To obtain an editable installation for local development:
+
+```bash
+$ conda create -n pygeoflood-env python=3.11
+$ conda activate pygeoflood-env
+(pygeoflood-env) $ git clone https://github.com/markwang0/geoflood
+(pygeoflood-env) $ cd geoflood
+(pygeoflood-env) $ pip install -e .
+```
+
 [^1]: Instructions for installing `conda`: https://docs.anaconda.com/free/miniconda/#quick-command-line-install.
 
 ## Citing
