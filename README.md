@@ -1,3 +1,5 @@
+# see [passaH2O/pygeoflood](https://github.com/passaH2O/pygeoflood) for the current version of this project
+
 # GeoFlood
 
 Flood mapping program based on high-resolution terrain analyses.
